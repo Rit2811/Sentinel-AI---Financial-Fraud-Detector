@@ -1,0 +1,76 @@
+# Environment files and secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+secrets/
+
+# Raw, local, and derived data
+data/raw/
+data/interim/
+data/processed/
+data/external/
+creditcard.csv
+*.parquet
+*.feather
+*.arrow
+
+# Models and experiment artifacts
+models/
+artifacts/
+checkpoints/
+mlruns/
+wandb/
+*.joblib
+*.pkl
+*.pickle
+*.onnx
+*.pt
+*.pth
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.uv-cache/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
+dist/
+build/
+*.egg-info/
+
+# Node and frontend
+node_modules/
+.npm/
+.pnpm-store/
+.yarn/cache/
+.next/
+.nuxt/
+.vite/
+coverage/
+*.tsbuildinfo
+
+# Logs, runtime files, and temporary output
+*.log
+logs/
+tmp/
+temp/
+*.tmp
+*.pid
+
+# IDE and OS files
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+Desktop.ini
