@@ -85,6 +85,7 @@ Thumbs.db
 Desktop.ini
 
 # Private task briefs, planning documents, and internal change reports
+*.pdf
 /docs/planning/
 /docs/task-*-change-report.*
 
