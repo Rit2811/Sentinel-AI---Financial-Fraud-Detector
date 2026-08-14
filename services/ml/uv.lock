@@ -336,10 +336,12 @@ name = "sentinel-fraud-ml"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
+    { name = "joblib" },
     { name = "kagglehub", extra = ["pandas-datasets"] },
     { name = "numpy" },
     { name = "pandas" },
     { name = "scikit-learn" },
+    { name = "scipy" },
 ]
 
 [package.dev-dependencies]
@@ -350,10 +352,12 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "joblib", specifier = ">=1.5,<2" },
     { name = "kagglehub", extras = ["pandas-datasets"], specifier = ">=1.0.2,<2" },
     { name = "numpy", specifier = ">=2.2,<3" },
     { name = "pandas", specifier = ">=2.2,<3" },
     { name = "scikit-learn", specifier = ">=1.6,<2" },
+    { name = "scipy", specifier = ">=1.15,<2" },
 ]
 
 [package.metadata.requires-dev]
