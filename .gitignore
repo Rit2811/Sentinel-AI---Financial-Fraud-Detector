@@ -87,3 +87,6 @@ Desktop.ini
 # Private task briefs, planning documents, and internal change reports
 /docs/planning/
 /docs/task-*-change-report.*
+
+# Local editable source used to render shareable PDF reports
+/docs/reports/*.html

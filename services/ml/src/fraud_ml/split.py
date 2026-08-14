@@ -13,16 +13,28 @@ def chronological_split(
         .sort_values(["Time", "_original_row"], kind="stable")
         .reset_index(drop=True)
     )
-    train_target = int(len(ordered) * train_fraction)
-    validation_target = int(len(ordered) * (train_fraction + validation_fraction))
-    train_end = _after_equal_time_group(ordered, train_target)
-    validation_end = _after_equal_time_group(ordered, validation_target)
+    train_end, validation_end = split_boundaries(
+        ordered, train_fraction, validation_fraction
+    )
     parts = (
         ordered.iloc[:train_end],
         ordered.iloc[train_end:validation_end],
         ordered.iloc[validation_end:],
     )
     return tuple(part.drop(columns="_original_row").copy() for part in parts)
+
+
+def split_boundaries(
+    ordered_frame: pd.DataFrame,
+    train_fraction: float = 0.6,
+    validation_fraction: float = 0.2,
+) -> tuple[int, int]:
+    train_target = int(len(ordered_frame) * train_fraction)
+    validation_target = int(len(ordered_frame) * (train_fraction + validation_fraction))
+    return (
+        _after_equal_time_group(ordered_frame, train_target),
+        _after_equal_time_group(ordered_frame, validation_target),
+    )
 
 
 def _after_equal_time_group(frame: pd.DataFrame, target: int) -> int:

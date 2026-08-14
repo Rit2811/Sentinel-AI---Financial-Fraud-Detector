@@ -4,7 +4,13 @@ Sentinel AI is planned as a real-time, self-adapting platform for detecting frau
 
 ## Current phase
 
-Task 3 provides an Express authorization-event ingestion boundary, a neutral React JavaScript/Vite page, PostgreSQL audit persistence, Redis readiness, and an isolated Docker Compose stack. It accepts synthetic/tokenized events only and contains no stream, fraud scoring, dataset pipeline, model, ML, or AI capability.
+Tasks 1-4 provide an Express authorization-event ingestion boundary, reliable
+Redis Stream publisher/consumer workers, PostgreSQL audit persistence, an
+offline Python ML baseline lane, a neutral React JavaScript/Vite page, and an
+isolated Docker Compose stack. Task 5 validation-only development adds
+calibrated probabilities, a weighted hybrid ensemble, and measured decision
+profiles. The locked test partition remains unopened pending the required M4,
+M5, and M6 approvals.
 
 ## Repository map
 
@@ -13,6 +19,8 @@ Task 3 provides an Express authorization-event ingestion boundary, a neutral Rea
 - `packages/` — future shared contracts and reusable packages.
 - `infrastructure/` — isolated four-service local Compose stack.
 - `scripts/` — unified Task 2 verification implementation.
+- `services/ml/` — offline dataset audit, baseline models, and Task 5
+  validation-only ensemble development.
 - `tests/` — future cross-component and acceptance tests.
 - `data/` — data-handling policy only; raw/local datasets are not committed.
 - `docs/` — repository documentation and authoritative planning inputs.
@@ -39,7 +47,7 @@ Copy `.env.example` to an ignored `.env` only when local overrides are needed. T
 
 ```bash
 make bootstrap  # install exactly locked host dependencies
-make up         # build and start four healthy services
+make up         # build and start six healthy services
 make ps         # show service and health state
 make logs       # show the most recent bounded logs
 make verify     # run Task 2 regressions plus Task 3 migrations, tests, and smoke checks
@@ -55,4 +63,7 @@ Never commit financial datasets, `creditcard.csv`, real environment files, crede
 
 ## Development status
 
-Authorization-event contract and ingestion boundary: Task 3 implementation pending manual acceptance.
+Tasks 1-4 are implemented. Task 5 development and reproducibility checks are
+complete and paused at the M4 threshold-profile approval gate. The offline ML
+ensemble is not connected to the live API, and the frontend remains an
+operational shell rather than a fraud dashboard.
