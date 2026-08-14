@@ -4,12 +4,12 @@ Sentinel AI is planned as a real-time, self-adapting platform for detecting frau
 
 ## Current phase
 
-Task 2 provides a local operational shell: FastAPI liveness/readiness, a neutral React/TypeScript/Vite page, PostgreSQL and Redis health, and an isolated Docker Compose stack. It contains no transaction processing, business schema, stream, fraud logic, dataset pipeline, model, ML, or AI capability.
+Task 3 provides an Express authorization-event ingestion boundary, a neutral React JavaScript/Vite page, PostgreSQL audit persistence, Redis readiness, and an isolated Docker Compose stack. It accepts synthetic/tokenized events only and contains no stream, fraud scoring, dataset pipeline, model, ML, or AI capability.
 
 ## Repository map
 
-- `backend/` — Python 3.12/FastAPI operational API shell and tests.
-- `frontend/` — Node 22/React/TypeScript/Vite neutral web shell and tests.
+- `backend/` — Node.js 22/Express authorization ingestion API, migrations, and tests.
+- `frontend/` — Node 22/React JavaScript/Vite neutral web shell and tests.
 - `packages/` — future shared contracts and reusable packages.
 - `infrastructure/` — isolated four-service local Compose stack.
 - `scripts/` — unified Task 2 verification implementation.
@@ -42,7 +42,7 @@ make bootstrap  # install exactly locked host dependencies
 make up         # build and start four healthy services
 make ps         # show service and health state
 make logs       # show the most recent bounded logs
-make verify     # run all Task 2 checks and smoke/failure/restart tests
+make verify     # run Task 2 regressions plus Task 3 migrations, tests, and smoke checks
 make down       # stop containers; preserve volumes
 make clean      # remove generated caches/builds; preserve volumes
 ```
@@ -55,4 +55,4 @@ Never commit financial datasets, `creditcard.csv`, real environment files, crede
 
 ## Development status
 
-Local toolchain and container foundation: Task 2 implementation. The transaction event contract and ingestion boundary has not started.
+Authorization-event contract and ingestion boundary: Task 3 implementation pending manual acceptance.

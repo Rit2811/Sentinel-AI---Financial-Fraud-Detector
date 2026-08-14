@@ -3,8 +3,8 @@ $RepoRoot = Split-Path -Parent $PSScriptRoot
 
 Push-Location (Join-Path $RepoRoot "backend")
 try {
-    & uv sync --frozen
-    if ($LASTEXITCODE -ne 0) { throw "uv sync failed with code $LASTEXITCODE" }
+    & npm ci
+    if ($LASTEXITCODE -ne 0) { throw "backend npm ci failed with code $LASTEXITCODE" }
 }
 finally {
     Pop-Location
@@ -13,7 +13,7 @@ finally {
 Push-Location (Join-Path $RepoRoot "frontend")
 try {
     & npm ci
-    if ($LASTEXITCODE -ne 0) { throw "npm ci failed with code $LASTEXITCODE" }
+    if ($LASTEXITCODE -ne 0) { throw "frontend npm ci failed with code $LASTEXITCODE" }
 }
 finally {
     Pop-Location

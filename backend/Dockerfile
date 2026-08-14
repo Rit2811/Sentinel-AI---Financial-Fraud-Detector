@@ -1,17 +1,12 @@
-FROM ghcr.io/astral-sh/uv:0.12.2 AS uv
+FROM node:22.14.0-alpine3.21
 
-FROM python:3.12.13-slim-bookworm
-
-ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1 \
-    PATH="/app/.venv/bin:$PATH"
+ENV NODE_ENV=production
 
 WORKDIR /app
-COPY --from=uv /uv /uvx /bin/
-COPY pyproject.toml uv.lock ./
-RUN uv sync --frozen --no-dev --no-install-project
+COPY package.json package-lock.json ./
+RUN npm ci
 COPY src ./src
-RUN uv sync --frozen --no-dev
+COPY migrations ./migrations
 
 EXPOSE 8000
-CMD ["uvicorn", "sentinel_api.main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["sh", "-c", "npm run migrate:up && node src/server.js"]

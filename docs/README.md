@@ -1,5 +1,6 @@
 # Documentation
 
-Project documentation belongs here. Authoritative source material and approved design inputs are indexed under `planning/`.
+Project documentation belongs here. Private planning inputs remain local and are excluded from Git.
 
-`task-1-and-task-2-change-report.pdf` is the consolidated implementation and verification record for the first two tasks. Its Markdown source is retained alongside it.
+- `task-3-authorization-ingestion.md` documents the public synthetic event contract, automated
+  verification, and exact manual acceptance cases.

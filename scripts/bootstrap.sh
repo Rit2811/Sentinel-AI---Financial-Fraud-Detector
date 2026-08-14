@@ -2,5 +2,5 @@
 set -euo pipefail
 
 ROOT=$(cd "${BASH_SOURCE[0]%/*}/.." && pwd)
-(cd "$ROOT/backend" && uv sync --frozen)
+(cd "$ROOT/backend" && npm ci)
 (cd "$ROOT/frontend" && npm ci)

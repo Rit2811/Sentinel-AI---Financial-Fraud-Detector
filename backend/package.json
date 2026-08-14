@@ -1,0 +1,46 @@
+{
+  "name": "sentinel-ai-api",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22 <23"
+  },
+  "scripts": {
+    "start": "node src/server.js",
+    "stream:publisher": "node src/stream/publisher.js",
+    "stream:consumer": "node src/stream/consumer.js",
+    "stream:evidence": "node src/stream/evidence.js",
+    "format": "prettier --write src tests *.js *.json README.md",
+    "format:check": "prettier --check src tests *.js *.json README.md",
+    "lint": "eslint src tests *.js",
+    "test": "node --experimental-vm-modules node_modules/jest/bin/jest.js --runInBand --cacheDirectory .jest-cache --testPathIgnorePatterns=integration",
+    "test:integration": "node --experimental-vm-modules node_modules/jest/bin/jest.js --runInBand --cacheDirectory .jest-cache tests/integration",
+    "migrate:up": "node-pg-migrate up -m migrations",
+    "migrate:down": "node-pg-migrate down -m migrations"
+  },
+  "jest": {
+    "testEnvironment": "node",
+    "coverageDirectory": "coverage",
+    "collectCoverageFrom": [
+      "src/**/*.js"
+    ]
+  },
+  "dependencies": {
+    "express": "^5.2.1",
+    "express-validator": "^7.3.2",
+    "node-pg-migrate": "^9.0.0",
+    "pg": "^8.23.0",
+    "pino": "^10.3.1",
+    "redis": "^6.2.0",
+    "swagger-ui-express": "^5.0.1"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "eslint": "^10.8.1",
+    "globals": "^17.9.0",
+    "jest": "^30.4.2",
+    "prettier": "^3.9.6",
+    "supertest": "^7.2.2"
+  }
+}

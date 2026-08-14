@@ -1,10 +1,9 @@
 $ErrorActionPreference = "Stop"
 $RepoRoot = [System.IO.Path]::GetFullPath((Split-Path -Parent $PSScriptRoot))
 $Targets = @(
-    "backend\.venv",
-    "backend\.pytest_cache",
-    "backend\.mypy_cache",
-    "backend\.ruff_cache",
+    "backend\node_modules",
+    "backend\.jest-cache",
+    "backend\coverage",
     "frontend\node_modules",
     "frontend\dist",
     "frontend\coverage"
