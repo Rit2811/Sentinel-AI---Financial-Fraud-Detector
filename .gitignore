@@ -88,5 +88,6 @@ Desktop.ini
 /docs/planning/
 /docs/task-*-change-report.*
 
-# Local editable source used to render shareable PDF reports
-/docs/reports/*.html
+# Local reports and generated evaluation evidence
+/docs/reports/
+/services/ml/reports/
