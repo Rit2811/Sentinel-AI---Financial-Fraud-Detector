@@ -17,6 +17,7 @@ creditcard.csv
 *.parquet
 *.feather
 *.arrow
+services/ml/data/
 
 # Models and experiment artifacts
 models/
@@ -30,6 +31,11 @@ wandb/
 *.onnx
 *.pt
 *.pth
+services/ml/artifacts/
+
+# Kaggle credentials must stay in the user's local profile, never this repo
+kaggle.json
+.kaggle/
 
 # Python
 __pycache__/
@@ -37,7 +43,10 @@ __pycache__/
 .venv/
 venv/
 .uv-cache/
+.uv-python/
 .pytest_cache/
+pytest-cache-files-*/
+.jest-cache/
 .mypy_cache/
 .ruff_cache/
 .coverage
@@ -74,3 +83,7 @@ temp/
 .DS_Store
 Thumbs.db
 Desktop.ini
+
+# Private task briefs, planning documents, and internal change reports
+/docs/planning/
+/docs/task-*-change-report.*

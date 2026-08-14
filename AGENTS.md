@@ -4,7 +4,7 @@
 
 This repository is for a real-time adaptive financial-fraud detection platform. The planned system has six future boundaries: streaming ingestion, real-time feature engineering, adaptive class-imbalance handling, hybrid ensemble scoring, concept-drift monitoring with incremental updates, and decision/alerting.
 
-The current baseline is the Task 2 local platform shell: FastAPI `/health` and `/ready`, a neutral React/Vite page, PostgreSQL and Redis health, and Docker Compose tooling. Do not add transaction APIs, business schemas, Redis Streams/workers, authentication, product workflows, fraud rules, scoring, dataset processing, machine learning, or AI unless a later task explicitly authorizes it.
+The current baseline is the Task 3 application boundary: Express `/health`, `/ready`, and version 1 authorization-event ingestion, a neutral React/Vite page, minimal PostgreSQL audit persistence, Redis readiness, and Docker Compose tooling. Do not add Redis Streams/workers, authentication, product workflows, fraud rules, scoring, dataset processing, machine learning, or AI unless a later task explicitly authorizes it.
 
 Read the authoritative material in `docs/planning/` before planning multi-step work. Prefer the patent for product and architectural intent and the Task 1 guide for repository-foundation controls.
 

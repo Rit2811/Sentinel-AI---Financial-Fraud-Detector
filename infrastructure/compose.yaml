@@ -35,11 +35,12 @@ services:
     restart: unless-stopped
 
   api:
-    image: sentinel-ai-api:task2
+    image: sentinel-ai-api:task4
     build:
       context: ../backend
     environment:
       POSTGRES_URL: postgresql://${POSTGRES_USER:-sentinel}:${POSTGRES_PASSWORD:-sentinel_local_only}@postgres:5432/${POSTGRES_DB:-sentinel}
+      DATABASE_URL: postgresql://${POSTGRES_USER:-sentinel}:${POSTGRES_PASSWORD:-sentinel_local_only}@postgres:5432/${POSTGRES_DB:-sentinel}
       REDIS_URL: redis://:${REDIS_PASSWORD:-sentinel_local_only}@redis:6379/0
       READINESS_TIMEOUT_SECONDS: ${READINESS_TIMEOUT_SECONDS:-2}
     ports:
@@ -50,11 +51,41 @@ services:
       redis:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/ready', timeout=2)"]
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8000/ready').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
       interval: 5s
       timeout: 3s
       retries: 12
       start_period: 5s
+    restart: unless-stopped
+
+  publisher:
+    image: sentinel-ai-api:task4
+    command: ["node", "src/stream/publisher.js"]
+    environment: &worker-environment
+      POSTGRES_URL: postgresql://${POSTGRES_USER:-sentinel}:${POSTGRES_PASSWORD:-sentinel_local_only}@postgres:5432/${POSTGRES_DB:-sentinel}
+      REDIS_URL: redis://:${REDIS_PASSWORD:-sentinel_local_only}@redis:6379/0
+      STREAM_NAME: ${STREAM_NAME:-authorization.events.v1}
+      STREAM_DEAD_LETTER_NAME: ${STREAM_DEAD_LETTER_NAME:-authorization.events.v1.dead-letter}
+      STREAM_CONSUMER_GROUP: ${STREAM_CONSUMER_GROUP:-fraud-proof-v1}
+      STREAM_CONSUMER_PURPOSE: ${STREAM_CONSUMER_PURPOSE:-task4-proof-consumer}
+      STREAM_BATCH_SIZE: ${STREAM_BATCH_SIZE:-50}
+      STREAM_BLOCK_MS: ${STREAM_BLOCK_MS:-2000}
+      STREAM_CLAIM_IDLE_MS: ${STREAM_CLAIM_IDLE_MS:-10000}
+      STREAM_POLL_MS: ${STREAM_POLL_MS:-500}
+      STREAM_MAX_ATTEMPTS: ${STREAM_MAX_ATTEMPTS:-5}
+      STREAM_RETENTION: ${STREAM_RETENTION:-10000}
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: unless-stopped
+
+  consumer:
+    image: sentinel-ai-api:task4
+    command: ["node", "src/stream/consumer.js"]
+    environment: *worker-environment
+    depends_on:
+      api:
+        condition: service_healthy
     restart: unless-stopped
 
   web:

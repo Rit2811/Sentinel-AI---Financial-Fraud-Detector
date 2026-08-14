@@ -1,0 +1,32 @@
+[project]
+name = "sentinel-fraud-ml"
+version = "0.1.0"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+  "kagglehub[pandas-datasets]>=1.0.2,<2",
+  "numpy>=2.2,<3",
+  "pandas>=2.2,<3",
+  "scikit-learn>=1.6,<2",
+]
+
+[dependency-groups]
+dev = ["pytest>=8.3,<9", "ruff>=0.11,<0.12"]
+
+[project.scripts]
+fraud-audit = "fraud_ml.cli:audit_main"
+fraud-baselines = "fraud_ml.cli:baseline_main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/fraud_ml"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 88
+target-version = "py312"
