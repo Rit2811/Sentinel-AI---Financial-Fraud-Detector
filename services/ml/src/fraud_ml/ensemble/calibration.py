@@ -16,7 +16,7 @@ from sklearn.metrics import (
 from sklearn.model_selection import StratifiedKFold
 
 from fraud_ml.models import build_models, reduce_knn_majority
-from fraud_ml.task5.config import MODEL_ORDER, Task5Config
+from fraud_ml.ensemble.config import EnsembleConfig, MODEL_ORDER
 
 
 @dataclass
@@ -47,7 +47,7 @@ def fit_calibrated_models(
     train_y: pd.Series,
     validation_x: pd.DataFrame,
     validation_y: pd.Series,
-    config: Task5Config,
+    config: EnsembleConfig,
 ) -> dict[str, CalibratedModel]:
     results = {}
     for name in MODEL_ORDER:
@@ -141,9 +141,14 @@ def _fit_one(name, train_x, train_y, validation_x, validation_y, config):
         validation_probabilities=validation_probabilities,
         evidence={
             "selected_method": selected_method,
+            "selected_calibrator_parameters": calibrator_parameters(calibrator),
             "candidate_training_oof_metrics": candidates,
             "validation_before_calibration": before,
             "validation_after_calibration": after,
+            "validation_raw_score_distribution": score_distribution(validation_raw),
+            "validation_probability_distribution": score_distribution(
+                validation_probabilities
+            ),
             "folds": fold_evidence,
             "oof_rows": int(len(oof_raw)),
             "oof_finite": bool(np.isfinite(oof_raw).all()),
@@ -159,6 +164,42 @@ def raw_scores(model, features) -> np.ndarray:
     if hasattr(model, "predict_proba"):
         return np.asarray(model.predict_proba(features)[:, 1], dtype=float)
     return np.asarray(model.decision_function(features), dtype=float)
+
+
+def calibrator_parameters(calibrator: ScoreCalibrator) -> dict:
+    if calibrator.method == "sigmoid":
+        return {
+            "method": "sigmoid",
+            "C": float(calibrator.estimator.C),
+            "max_iter": int(calibrator.estimator.max_iter),
+            "random_state": int(calibrator.estimator.random_state),
+        }
+    return {
+        "method": "isotonic",
+        "out_of_bounds": calibrator.estimator.out_of_bounds,
+        "y_min": float(calibrator.estimator.y_min),
+        "y_max": float(calibrator.estimator.y_max),
+    }
+
+
+def score_distribution(values) -> dict:
+    values = np.asarray(values, dtype=float)
+    quantiles = np.quantile(values, [0.01, 0.05, 0.25, 0.5, 0.75, 0.95, 0.99])
+    return {
+        "count": int(len(values)),
+        "minimum": float(values.min()),
+        "maximum": float(values.max()),
+        "mean": float(values.mean()),
+        "stddev": float(values.std()),
+        "quantiles": {
+            key: float(value)
+            for key, value in zip(
+                ("p01", "p05", "p25", "p50", "p75", "p95", "p99"),
+                quantiles,
+                strict=True,
+            )
+        },
+    }
 
 
 def cross_fitted_calibration(raw, target, method, config) -> np.ndarray:
@@ -219,6 +260,55 @@ def probability_metrics(target, probabilities, bins) -> dict:
         }
     )
     return metrics
+
+
+def chronological_stability_metrics(target, probabilities, segments=5) -> dict:
+    target = np.asarray(target, dtype=int)
+    probabilities = np.asarray(probabilities, dtype=float)
+    rows = []
+    for index, selected in enumerate(np.array_split(np.arange(len(target)), segments)):
+        segment_target = target[selected]
+        segment_probabilities = probabilities[selected]
+        if len(np.unique(segment_target)) < 2:
+            rows.append(
+                {
+                    "segment": index + 1,
+                    "rows": int(len(selected)),
+                    "fraud": int(segment_target.sum()),
+                    "average_precision": None,
+                    "log_loss": None,
+                }
+            )
+            continue
+        rows.append(
+            {
+                "segment": index + 1,
+                "rows": int(len(selected)),
+                "fraud": int(segment_target.sum()),
+                "average_precision": float(
+                    average_precision_score(segment_target, segment_probabilities)
+                ),
+                "log_loss": float(
+                    log_loss(
+                        segment_target,
+                        segment_probabilities,
+                        labels=[0, 1],
+                    )
+                ),
+            }
+        )
+    measured = [row for row in rows if row["average_precision"] is not None]
+    return {
+        "segments": rows,
+        "measured_segments": int(len(measured)),
+        "minimum_average_precision": float(
+            min(row["average_precision"] for row in measured)
+        ),
+        "average_precision_stddev": float(
+            np.std([row["average_precision"] for row in measured])
+        ),
+        "maximum_log_loss": float(max(row["log_loss"] for row in measured)),
+    }
 
 
 def reliability_table(target, probabilities, bins) -> list[dict]:

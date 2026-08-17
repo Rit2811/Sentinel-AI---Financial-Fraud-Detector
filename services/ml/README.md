@@ -14,14 +14,17 @@ The CSV, Kaggle credentials, reports, per-row scores, and model artifacts are
 local-only and ignored by Git. The test partition is created and reported but
 never scored.
 
-## Task 5 validation-only ensemble
+## Validation-only calibrated ensemble
 
-Task 5 performs deterministic five-fold training-only calibration, compares
+Ensemble development performs deterministic five-fold training-only calibration, compares
 equal and constrained weighted soft voting, and generates three measured
 Allow/Review/Block profiles:
 
-- `uv run fraud-task5-develop --local-csv data/creditcard.csv`
+- `uv run fraud-ensemble-develop --local-csv data/creditcard.csv`
+- `uv run fraud-ensemble-smoke --bundle-dir artifacts/model-bundles/ensemble-development-v1`
 
-The command writes private models and per-row scores under ignored `artifacts/`
-and safe aggregate evidence under `reports/task5/`. Development is currently
-paused at the M4 profile-selection gate. The locked test remains unopened.
+The development command writes a structured, checksummed local bundle under
+ignored `artifacts/model-bundles/ensemble-development-v1/` and safe aggregate
+evidence under `reports/ensemble-development/`. The smoke command verifies the
+complete bundle and scores a synthetic feature row without `Class`. Development
+is paused at the M4 profile-selection gate. The locked test remains unopened.

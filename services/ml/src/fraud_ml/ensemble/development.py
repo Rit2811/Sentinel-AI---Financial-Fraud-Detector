@@ -4,22 +4,23 @@ import argparse
 from datetime import UTC, datetime
 from pathlib import Path
 
-import joblib
-import numpy as np
-
 from fraud_ml.data import load_local_dataset
-from fraud_ml.task5.access import development_partitions
-from fraud_ml.task5.artifacts import sha256_file, verify_checksums, write_checksums
-from fraud_ml.task5.calibration import fit_calibrated_models
-from fraud_ml.task5.config import (
+from fraud_ml.ensemble.access import development_partitions
+from fraud_ml.ensemble.artifacts import sha256_file
+from fraud_ml.ensemble.bundle import package_development_bundle, smoke_score
+from fraud_ml.ensemble.calibration import fit_calibrated_models
+from fraud_ml.ensemble.config import (
     DATASET_SHA256,
     FEATURE_ORDER,
-    MODEL_ORDER,
-    Task5Config,
+    EnsembleConfig,
 )
-from fraud_ml.task5.fusion import fusion_analysis
-from fraud_ml.task5.policy import named_profiles, threshold_tradeoffs
-from fraud_ml.task5.reporting import (
+from fraud_ml.ensemble.fusion import fusion_analysis
+from fraud_ml.ensemble.policy import (
+    named_profiles,
+    precision_recall_evidence,
+    threshold_tradeoffs,
+)
+from fraud_ml.ensemble.reporting import (
     class_counts,
     code_record,
     environment_record,
@@ -31,7 +32,7 @@ from fraud_ml.task5.reporting import (
 
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(
-        description="Run Task 5 validation-only calibrated ensemble development."
+        description="Run validation-only calibrated ensemble development."
     )
     parser.add_argument(
         "--local-csv",
@@ -41,12 +42,12 @@ def parse_args(argv=None):
     parser.add_argument(
         "--report-dir",
         type=Path,
-        default=Path("reports/task5"),
+        default=Path("reports/ensemble-development"),
     )
     parser.add_argument(
         "--artifact-dir",
         type=Path,
-        default=Path("artifacts/task5-development"),
+        default=Path("artifacts/model-bundles/ensemble-development-v1"),
     )
     return parser.parse_args(argv)
 
@@ -60,7 +61,7 @@ def run_development(local_csv: Path, report_dir: Path, artifact_dir: Path) -> di
             f"Dataset SHA-256 mismatch: expected {DATASET_SHA256}, got {actual_sha256}"
         )
 
-    config = Task5Config()
+    config = EnsembleConfig()
     frame = load_local_dataset(local_csv)
     partitions = development_partitions(frame)
     del frame
@@ -78,7 +79,7 @@ def run_development(local_csv: Path, report_dir: Path, artifact_dir: Path) -> di
         validation_y,
         config,
     )
-    fusion = fusion_analysis(models, train_y, validation_y, config)
+    fusion = fusion_analysis(models, train_y, validation_x, validation_y, config)
     selected_scores = fusion["selected_scores"]
     decision_latency_ms = (
         sum(model.evidence["validation_score_seconds"] for model in models.values())
@@ -105,34 +106,35 @@ def run_development(local_csv: Path, report_dir: Path, artifact_dir: Path) -> di
         else available_profiles[0]
     )
 
-    report_dir.mkdir(parents=True, exist_ok=True)
-    artifact_dir.mkdir(parents=True, exist_ok=True)
-    for name in MODEL_ORDER:
-        joblib.dump(models[name].base_model, artifact_dir / f"{name}_model.joblib")
-        joblib.dump(models[name].calibrator, artifact_dir / f"{name}_calibrator.joblib")
-    joblib.dump(
-        {
-            "selected_fusion": fusion["selected_fusion"],
-            "selected_weights": fusion["selected_weights"],
-            "model_order": MODEL_ORDER,
-        },
-        artifact_dir / "fusion.joblib",
+    precision_recall = precision_recall_evidence(
+        validation_y,
+        selected_scores,
+        budgets=config.review_budgets,
+        maximum_curve_points=config.precision_recall_curve_points,
     )
-    write_json(artifact_dir / "development_config.json", config.to_dict())
-    np.savez_compressed(
-        artifact_dir / "validation_scores.npz",
-        target=np.asarray(validation_y, dtype=np.int8),
-        selected_fusion=np.asarray(selected_scores, dtype=float),
-        base_probabilities=np.asarray(fusion["base_validation_matrix"], dtype=float),
+    strongest_name = fusion["strongest_single_model"]
+    strongest_tradeoffs = threshold_tradeoffs(
+        validation_y,
+        models[strongest_name].validation_probabilities,
+        validation_amounts,
+        config.action_rate_grid,
+        config.block_rate_grid,
+        models[strongest_name].evidence["validation_score_seconds"]
+        * 1000
+        / len(validation_y),
     )
-    checksums = write_checksums(artifact_dir)
-    verify_checksums(artifact_dir)
-
-    safe_fusion = {
-        key: value
-        for key, value in fusion.items()
-        if key not in {"selected_scores", "base_validation_matrix"}
+    strongest_profiles = named_profiles(strongest_tradeoffs)
+    same_constraint_comparison = {
+        profile_name: {
+            "constraints": profile["constraints"],
+            "selected_fusion": profile["measured_policy"],
+            "strongest_single_model": strongest_name,
+            "strongest_single": strongest_profiles[profile_name]["measured_policy"],
+        }
+        for profile_name, profile in profiles.items()
     }
+
+    report_dir.mkdir(parents=True, exist_ok=True)
     locked_test = {
         "state": partitions.locked_test.state,
         "start_row": partitions.locked_test.start,
@@ -142,32 +144,56 @@ def run_development(local_csv: Path, report_dir: Path, artifact_dir: Path) -> di
         "labels_accessed": False,
         "predictions_generated": False,
     }
+    partition_record = {
+        "training": {
+            "rows": len(train_y),
+            "class_counts": class_counts(train_y),
+        },
+        "validation": {
+            "rows": len(validation_y),
+            "class_counts": class_counts(validation_y),
+        },
+        "locked_test": locked_test,
+    }
+    environment = environment_record()
+    code = code_record()
+    checksums = package_development_bundle(
+        artifact_dir,
+        models,
+        fusion,
+        profiles,
+        recommended_profile,
+        validation_y,
+        config,
+        partition_record,
+        environment,
+        code,
+    )
+    smoke_evidence = smoke_score(artifact_dir)
+    safe_fusion = {
+        key: value
+        for key, value in fusion.items()
+        if key not in {"selected_scores", "base_validation_matrix"}
+    }
     validation_report = {
         "status": "AWAITING_M4_PROFILE_SELECTION",
         "generated_at_utc": datetime.now(UTC).isoformat(),
         "dataset": {
-            "path": local_csv.as_posix(),
+            "file_name": local_csv.name,
             "sha256": actual_sha256,
         },
         "configuration": config.to_dict(),
-        "environment": environment_record(),
-        "code": code_record(),
-        "partitions": {
-            "training": {
-                "rows": len(train_y),
-                "class_counts": class_counts(train_y),
-            },
-            "validation": {
-                "rows": len(validation_y),
-                "class_counts": class_counts(validation_y),
-            },
-            "locked_test": locked_test,
-        },
+        "environment": environment,
+        "code": code,
+        "partitions": partition_record,
         "calibration": {name: model.evidence for name, model in models.items()},
         "fusion": safe_fusion,
+        "precision_recall_evidence": precision_recall,
+        "same_constraint_strongest_single_comparison": same_constraint_comparison,
         "profiles": profiles,
         "recommended_profile": recommended_profile,
         "artifact_inventory": sorted(checksums),
+        "bundle_smoke": smoke_evidence,
         "limitations": [
             "Validation-only results are not final test evidence.",
             "Amount summaries are benchmark scenarios, not confirmed loss avoided.",
@@ -183,6 +209,8 @@ def run_development(local_csv: Path, report_dir: Path, artifact_dir: Path) -> di
             "selected_fusion": fusion["selected_fusion"],
             "tradeoffs": tradeoffs,
             "profiles": profiles,
+            "precision_recall_evidence": precision_recall,
+            "same_constraint_strongest_single_comparison": same_constraint_comparison,
             "recommended_profile": recommended_profile,
             "amount_interpretation": "Benchmark scenario only; not loss avoided.",
         },
@@ -192,6 +220,8 @@ def run_development(local_csv: Path, report_dir: Path, artifact_dir: Path) -> di
         partitions.locked_test.row_count,
         fusion["selected_fusion"],
         recommended_profile,
+        safe_fusion[fusion["selected_fusion"]]["metrics"],
+        profiles,
     )
     return json_safe(validation_report)
 
@@ -199,7 +229,7 @@ def run_development(local_csv: Path, report_dir: Path, artifact_dir: Path) -> di
 def main(argv=None):
     args = parse_args(argv)
     report = run_development(args.local_csv, args.report_dir, args.artifact_dir)
-    print("Task 5 validation development completed.")
+    print("Calibrated ensemble validation development completed.")
     print("Selected fusion:", report["fusion"]["selected_fusion"])
     print("Recommended profile:", report["recommended_profile"])
     print("Locked test:", report["partitions"]["locked_test"]["state"])

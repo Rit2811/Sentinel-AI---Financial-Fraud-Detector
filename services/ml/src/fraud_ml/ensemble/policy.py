@@ -5,6 +5,7 @@ from sklearn.metrics import (
     confusion_matrix,
     f1_score,
     fbeta_score,
+    precision_recall_curve,
     precision_score,
     recall_score,
 )
@@ -46,6 +47,79 @@ def threshold_tradeoffs(
 def threshold_for_rate(scores, rate) -> float:
     count = max(1, int(np.ceil(len(scores) * rate)))
     return float(np.sort(np.asarray(scores, dtype=float))[-count])
+
+
+def precision_recall_evidence(
+    target,
+    scores,
+    budgets=(100, 500, 1000),
+    maximum_curve_points=201,
+) -> dict:
+    target = np.asarray(target, dtype=int)
+    scores = np.asarray(scores, dtype=float)
+    precision, recall, thresholds = precision_recall_curve(target, scores)
+    all_points = [
+        {
+            "threshold": float(thresholds[index]),
+            "precision": float(precision[index]),
+            "recall": float(recall[index]),
+        }
+        for index in range(len(thresholds))
+    ]
+    all_points.append(
+        {
+            "threshold": None,
+            "precision": float(precision[-1]),
+            "recall": float(recall[-1]),
+        }
+    )
+    if len(all_points) > maximum_curve_points:
+        selected = np.unique(
+            np.linspace(0, len(all_points) - 1, maximum_curve_points, dtype=int)
+        )
+        curve = [all_points[index] for index in selected]
+    else:
+        curve = all_points
+
+    order = np.argsort(-scores, kind="stable")
+    fraud_total = int(target.sum())
+    budget_rows = {}
+    for budget in budgets:
+        if budget > len(target):
+            continue
+        selected_target = target[order[:budget]]
+        fraud_found = int(selected_target.sum())
+        budget_rows[str(budget)] = {
+            "reviewed": int(budget),
+            "fraud_found": fraud_found,
+            "precision": float(fraud_found / budget),
+            "recall": float(fraud_found / fraud_total) if fraud_total else 0.0,
+            "false_positives": int(budget - fraud_found),
+        }
+    return {
+        "curve": curve,
+        "curve_source_points": int(len(all_points)),
+        "curve_maximum_reported_points": int(maximum_curve_points),
+        "bounded_review_budgets": budget_rows,
+    }
+
+
+def fixed_rate_policy_evidence(target, scores, action_rate=0.01) -> dict:
+    target = np.asarray(target, dtype=int)
+    scores = np.asarray(scores, dtype=float)
+    threshold = threshold_for_rate(scores, action_rate)
+    actioned = scores >= threshold
+    fraud_total = int(target.sum())
+    fraud_found = int(target[actioned].sum())
+    action_count = int(actioned.sum())
+    return {
+        "action_rate_target": float(action_rate),
+        "threshold": float(threshold),
+        "action_count": action_count,
+        "action_rate_actual": float(action_count / len(target)),
+        "precision": float(fraud_found / action_count) if action_count else 0.0,
+        "recall": float(fraud_found / fraud_total) if fraud_total else 0.0,
+    }
 
 
 def decision_metrics(
@@ -93,8 +167,8 @@ def decision_metrics(
     }
 
 
-def named_profiles(tradeoffs: list[dict]) -> dict:
-    definitions = {
+def profile_definitions() -> dict:
+    return {
         "Conservative Block": {
             "maximum_action_rate": 0.005,
             "minimum_block_precision": 0.90,
@@ -126,7 +200,11 @@ def named_profiles(tradeoffs: list[dict]) -> dict:
             ),
         },
     }
+
+
+def named_profiles(tradeoffs: list[dict]) -> dict:
     profiles = {}
+    definitions = profile_definitions()
     for name, definition in definitions.items():
         eligible = [
             row

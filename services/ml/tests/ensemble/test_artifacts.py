@@ -3,7 +3,7 @@ from pathlib import Path
 import joblib
 import pytest
 
-from fraud_ml.task5.artifacts import trusted_load, verify_checksums, write_checksums
+from fraud_ml.ensemble.artifacts import trusted_load, verify_checksums, write_checksums
 
 
 def test_bundle_checksum_verification_and_corruption_rejection(tmp_path: Path):

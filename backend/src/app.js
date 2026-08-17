@@ -6,12 +6,15 @@ import swaggerUi from 'swagger-ui-express'
 
 import { config } from './config.js'
 import { createAuthorizationEventController } from './controllers/authorizationEventController.js'
+import { createDashboardController } from './controllers/dashboardController.js'
 import { pool as defaultPool } from './db.js'
 import { rejectionBody } from './http/responses.js'
 import { logger as defaultLogger } from './logger.js'
 import { openApiDocument } from './openapi.js'
 import { createAuthorizationEventsRouter } from './routes/authorizationEvents.js'
+import { createDashboardRouter } from './routes/dashboard.js'
 import { createAuthorizationIngestionService } from './services/authorizationIngestionService.js'
+import { createDashboardService } from './services/dashboardService.js'
 import { createRejectedAttemptService } from './services/rejectedAttemptService.js'
 
 const UUID_PATTERN =
@@ -46,6 +49,7 @@ export function createApp({
   pool = defaultPool,
   log = defaultLogger,
   ingestionService: suppliedIngestionService,
+  dashboardService: suppliedDashboardService,
   recordRejectedAttempt: suppliedRecordRejectedAttempt,
   redisFactory = () =>
     createClient({
@@ -67,6 +71,9 @@ export function createApp({
     ingestionService,
     recordRejectedAttempt,
   )
+  const dashboardService =
+    suppliedDashboardService ?? createDashboardService(pool, log)
+  const dashboardController = createDashboardController(dashboardService)
 
   app.use((req, res, next) => {
     const supplied = req.get('X-Correlation-ID')
@@ -110,6 +117,7 @@ export function createApp({
 
   app.get('/openapi.json', (_req, res) => res.json(openApiDocument))
   app.use('/docs', swaggerUi.serve, swaggerUi.setup(openApiDocument))
+  app.use('/api/v1/dashboard', createDashboardRouter(dashboardController))
 
   app.use('/api/v1/authorization-events', async (req, res, next) => {
     if (!req.is('application/json')) {

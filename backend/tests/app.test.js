@@ -5,6 +5,10 @@ import request from 'supertest'
 
 import { createApp } from '../src/app.js'
 import { DependencyUnavailableError } from '../src/services/authorizationIngestionService.js'
+import {
+  DashboardUnavailableError,
+  UnsupportedDashboardRangeError,
+} from '../src/services/dashboardService.js'
 import { cardNotPresent, correlationId, idempotencyKey } from './fixtures.js'
 
 const log = { info: jest.fn(), warn: jest.fn(), error: jest.fn() }
@@ -159,5 +163,76 @@ describe('HTTP ingestion boundary', () => {
     expect(response.body.components.examples.CardNotPresent.value).toEqual(
       cardNotPresent(),
     )
+    expect(
+      response.body.paths['/api/v1/dashboard'].get.responses,
+    ).toHaveProperty('200')
+  })
+})
+
+describe('operational dashboard boundary', () => {
+  beforeEach(() => jest.clearAllMocks())
+
+  const snapshot = {
+    schema_version: '1.0',
+    generated_at: '2026-08-17T06:00:00.000Z',
+    range: '24h',
+    window: {
+      from: '2026-08-16T06:00:00.000Z',
+      to: '2026-08-17T06:00:00.000Z',
+      bucket_seconds: 3600,
+    },
+    summary: {
+      total_events: 2,
+      processed_events: 2,
+      rejected_attempts: 0,
+      quarantined_events: 0,
+      pending_events: 0,
+      dead_letter_events: 0,
+      processing_rate: 100,
+      last_event_at: '2026-08-17T05:55:00.000Z',
+    },
+    channels: { card_present: 1, card_not_present: 1 },
+    activity: [],
+  }
+
+  test('returns a no-store snapshot for the requested range', async () => {
+    const getSnapshot = jest.fn(async () => snapshot)
+    const app = createApp({
+      pool: unusedPool,
+      log,
+      dashboardService: { getSnapshot },
+      ingestionService: { ingest: jest.fn() },
+      recordRejectedAttempt,
+    })
+
+    const response = await request(app).get('/api/v1/dashboard?range=7d')
+
+    expect(response.status).toBe(200)
+    expect(response.headers['cache-control']).toBe('no-store')
+    expect(response.body).toEqual(snapshot)
+    expect(getSnapshot).toHaveBeenCalledWith('7d')
+  })
+
+  test.each([
+    [new UnsupportedDashboardRangeError(), 400, 'invalid_range'],
+    [new DashboardUnavailableError(), 503, 'dashboard_unavailable'],
+  ])('returns a bounded dashboard error', async (error, status, code) => {
+    const app = createApp({
+      pool: unusedPool,
+      log,
+      dashboardService: {
+        getSnapshot: jest.fn(async () => {
+          throw error
+        }),
+      },
+      ingestionService: { ingest: jest.fn() },
+      recordRejectedAttempt,
+    })
+
+    const response = await request(app).get('/api/v1/dashboard?range=nope')
+
+    expect(response.status).toBe(status)
+    expect(response.body.code).toBe(code)
+    expect(response.body.correlation_id).toMatch(/^[0-9a-f-]{36}$/)
   })
 })

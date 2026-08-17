@@ -183,4 +183,31 @@ describe('PostgreSQL authorization ingestion', () => {
     )
     expect(count.rows[0].count).toBe(1)
   })
+
+  test('returns only aggregate live dashboard data', async () => {
+    const event = uniqueEvent()
+    expect((await post(event)).status).toBe(202)
+    await recordProcessingReceipt(pool, {
+      consumerPurpose: 'dashboard-proof',
+      eventId: event.event_id,
+      streamMessageId: 'dashboard-1-0',
+      envelopeHash: '1'.repeat(64),
+    })
+
+    const response = await request(app).get('/api/v1/dashboard?range=1h')
+
+    expect(response.status).toBe(200)
+    expect(response.headers['cache-control']).toBe('no-store')
+    expect(response.body.range).toBe('1h')
+    expect(response.body.summary.total_events).toBe(1)
+    expect(response.body.summary.processed_events).toBe(1)
+    expect(
+      response.body.activity.reduce(
+        (total, bucket) => total + bucket.ingested,
+        0,
+      ),
+    ).toBe(1)
+    expect(JSON.stringify(response.body)).not.toContain(event.card_token)
+    expect(JSON.stringify(response.body)).not.toContain(event.account_token)
+  })
 })

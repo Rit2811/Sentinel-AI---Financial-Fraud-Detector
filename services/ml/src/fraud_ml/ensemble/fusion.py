@@ -1,10 +1,17 @@
 from __future__ import annotations
 
+import time
+
 import numpy as np
 from scipy.optimize import minimize
+from sklearn.metrics import log_loss
 
-from fraud_ml.task5.calibration import probability_metrics
-from fraud_ml.task5.config import MODEL_ORDER, Task5Config
+from fraud_ml.ensemble.calibration import (
+    chronological_stability_metrics,
+    probability_metrics,
+)
+from fraud_ml.ensemble.config import EnsembleConfig, FEATURE_ORDER, MODEL_ORDER
+from fraud_ml.ensemble.policy import fixed_rate_policy_evidence
 
 
 def calibrated_matrix(models, partition: str) -> np.ndarray:
@@ -19,8 +26,15 @@ def calibrated_matrix(models, partition: str) -> np.ndarray:
     return matrix
 
 
-def eligibility_report(models, validation_y, config) -> dict:
+def eligibility_report(models, validation_x, validation_y, config) -> dict:
     prevalence = float(np.mean(validation_y))
+    baseline_log_loss = float(
+        log_loss(
+            validation_y,
+            np.full(len(validation_y), prevalence),
+            labels=[0, 1],
+        )
+    )
     report = {}
     for name in MODEL_ORDER:
         probabilities = models[name].validation_probabilities
@@ -35,7 +49,15 @@ def eligibility_report(models, validation_y, config) -> dict:
             ),
             "ranking_above_no_skill": metrics["average_precision"] > prevalence,
             "non_degenerate": metrics["probability_stddev"] > 1e-8,
-            "feature_contract_compatible": True,
+            "calibration_better_than_constant": (
+                metrics["log_loss"] < baseline_log_loss
+            ),
+            "feature_contract_compatible": (
+                list(validation_x.columns) == list(FEATURE_ORDER)
+                and list(getattr(models[name].base_model, "feature_names_in_", ()))
+                == list(FEATURE_ORDER)
+            ),
+            "row_contract_compatible": len(probabilities) == len(validation_y),
             "runtime_recorded": (
                 models[name].evidence["validation_score_seconds"] >= 0
             ),
@@ -45,6 +67,26 @@ def eligibility_report(models, validation_y, config) -> dict:
             "checks": checks,
             "validation_average_precision": metrics["average_precision"],
             "no_skill_average_precision": prevalence,
+            "validation_log_loss": metrics["log_loss"],
+            "constant_probability_log_loss": baseline_log_loss,
+            "diagnostics": {
+                "ranking_regression": float(
+                    models[name].evidence["validation_before_calibration"][
+                        "average_precision"
+                    ]
+                    - metrics["average_precision"]
+                ),
+                "ranking_regression_within_advisory_tolerance": (
+                    metrics["average_precision"]
+                    >= models[name].evidence["validation_before_calibration"][
+                        "average_precision"
+                    ]
+                    - config.ranking_regression_tolerance
+                ),
+            },
+            "observed_feature_order": list(
+                getattr(models[name].base_model, "feature_names_in_", ())
+            ),
         }
     return report
 
@@ -52,7 +94,7 @@ def eligibility_report(models, validation_y, config) -> dict:
 def optimize_weights(
     training_probabilities: np.ndarray,
     training_y,
-    config: Task5Config,
+    config: EnsembleConfig,
 ) -> np.ndarray:
     model_count = training_probabilities.shape[1]
     equal = np.full(model_count, 1 / model_count)
@@ -80,8 +122,14 @@ def optimize_weights(
     return weights
 
 
-def fusion_analysis(models, training_y, validation_y, config) -> dict:
-    eligibility = eligibility_report(models, validation_y, config)
+def fusion_analysis(
+    models,
+    training_y,
+    validation_x,
+    validation_y,
+    config: EnsembleConfig,
+) -> dict:
+    eligibility = eligibility_report(models, validation_x, validation_y, config)
     ineligible = [name for name, item in eligibility.items() if not item["eligible"]]
     if ineligible:
         raise ValueError(f"Ineligible fusion members: {', '.join(ineligible)}")
@@ -90,15 +138,37 @@ def fusion_analysis(models, training_y, validation_y, config) -> dict:
     validation = calibrated_matrix(models, "validation")
     equal_weights = np.full(len(MODEL_ORDER), 1 / len(MODEL_ORDER))
     weighted_weights = optimize_weights(training, training_y, config)
+    started = time.perf_counter()
     equal_scores = validation @ equal_weights
+    equal_score_seconds = time.perf_counter() - started
+    started = time.perf_counter()
     weighted_scores = validation @ weighted_weights
+    weighted_score_seconds = time.perf_counter() - started
     equal_metrics = probability_metrics(
         validation_y, equal_scores, config.calibration_bins
     )
     weighted_metrics = probability_metrics(
         validation_y, weighted_scores, config.calibration_bins
     )
-    selected_name = select_fusion(equal_metrics, weighted_metrics)
+    equal_selection_evidence = fusion_selection_evidence(
+        validation_y,
+        equal_scores,
+        equal_metrics,
+        equal_weights,
+        equal_score_seconds,
+    )
+    weighted_selection_evidence = fusion_selection_evidence(
+        validation_y,
+        weighted_scores,
+        weighted_metrics,
+        weighted_weights,
+        weighted_score_seconds,
+    )
+    selected_name = select_fusion(
+        equal_selection_evidence,
+        weighted_selection_evidence,
+        config,
+    )
     selected_scores = (
         weighted_scores if selected_name == "weighted_soft_vote" else equal_scores
     )
@@ -159,12 +229,14 @@ def fusion_analysis(models, training_y, validation_y, config) -> dict:
         "equal_weight": {
             "weights": dict(zip(MODEL_ORDER, equal_weights.tolist(), strict=True)),
             "metrics": equal_metrics,
+            "selection_evidence": equal_selection_evidence,
         },
         "weighted_soft_vote": {
             "weights": dict(zip(MODEL_ORDER, weighted_weights.tolist(), strict=True)),
             "metrics": weighted_metrics,
             "regularization": config.fusion_regularization,
             "minimum_weight": config.minimum_fusion_weight,
+            "selection_evidence": weighted_selection_evidence,
         },
         "selected_fusion": selected_name,
         "selected_weights": dict(
@@ -180,16 +252,69 @@ def fusion_analysis(models, training_y, validation_y, config) -> dict:
     }
 
 
-def select_fusion(equal_metrics, weighted_metrics) -> str:
-    ap_tolerance = 0.002
+def fusion_selection_evidence(
+    validation_y,
+    scores,
+    metrics,
+    weights,
+    score_seconds,
+) -> dict:
+    return {
+        "ranking": {
+            "average_precision": metrics["average_precision"],
+            "roc_auc": metrics["roc_auc"],
+        },
+        "calibration": {
+            "log_loss": metrics["log_loss"],
+            "brier_score": metrics["brier_score"],
+            "expected_calibration_error": metrics["expected_calibration_error"],
+        },
+        "policy_yield_at_one_percent": fixed_rate_policy_evidence(
+            validation_y,
+            scores,
+            action_rate=0.01,
+        ),
+        "chronological_stability": chronological_stability_metrics(
+            validation_y,
+            scores,
+        ),
+        "runtime": {
+            "batch_score_seconds": float(score_seconds),
+            "estimated_seconds_per_row": float(score_seconds / len(scores)),
+            "finite": bool(np.isfinite(score_seconds) and score_seconds >= 0),
+        },
+        "weight_stability": {
+            "maximum_weight": float(np.max(weights)),
+            "minimum_weight": float(np.min(weights)),
+            "distance_from_equal": float(
+                np.linalg.norm(weights - np.full(len(weights), 1 / len(weights)))
+            ),
+        },
+    }
+
+
+def select_fusion(equal, weighted, config: EnsembleConfig) -> str:
+    equal_metrics = equal["ranking"] | equal["calibration"]
+    weighted_metrics = weighted["ranking"] | weighted["calibration"]
     weighted_compatible = (
         weighted_metrics["average_precision"]
-        >= equal_metrics["average_precision"] - ap_tolerance
-        and weighted_metrics["log_loss"] <= equal_metrics["log_loss"] * 1.02
+        >= equal_metrics["average_precision"]
+        - config.fusion_average_precision_tolerance
+        and weighted_metrics["log_loss"]
+        <= equal_metrics["log_loss"] * (1 + config.fusion_log_loss_tolerance)
+        and weighted["policy_yield_at_one_percent"]["recall"]
+        >= equal["policy_yield_at_one_percent"]["recall"]
+        - config.fusion_policy_recall_tolerance
+        and weighted["chronological_stability"]["minimum_average_precision"]
+        >= equal["chronological_stability"]["minimum_average_precision"]
+        - config.fusion_stability_tolerance
+        and weighted["runtime"]["finite"]
     )
     weighted_improves = (
         weighted_metrics["average_precision"] > equal_metrics["average_precision"]
         or weighted_metrics["log_loss"] < equal_metrics["log_loss"]
+        or weighted["policy_yield_at_one_percent"]["recall"]
+        > equal["policy_yield_at_one_percent"]["recall"]
     )
     return (
         "weighted_soft_vote"

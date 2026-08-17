@@ -6,8 +6,8 @@ Sentinel AI is planned as a real-time, self-adapting platform for detecting frau
 
 Tasks 1-4 provide an Express authorization-event ingestion boundary, reliable
 Redis Stream publisher/consumer workers, PostgreSQL audit persistence, an
-offline Python ML baseline lane, a neutral React JavaScript/Vite page, and an
-isolated Docker Compose stack. Task 5 validation-only development adds
+offline Python ML baseline lane, a PostgreSQL-backed React/Vite operational
+dashboard, and an isolated Docker Compose stack. Validation-only ensemble development adds
 calibrated probabilities, a weighted hybrid ensemble, and measured decision
 profiles. The locked test partition remains unopened pending the required M4,
 M5, and M6 approvals.
@@ -15,11 +15,11 @@ M5, and M6 approvals.
 ## Repository map
 
 - `backend/` — Node.js 22/Express authorization ingestion API, migrations, and tests.
-- `frontend/` — Node 22/React JavaScript/Vite neutral web shell and tests.
+- `frontend/` — Node 22/React/Vite live operational dashboard and tests.
 - `packages/` — future shared contracts and reusable packages.
 - `infrastructure/` — isolated four-service local Compose stack.
 - `scripts/` — unified Task 2 verification implementation.
-- `services/ml/` — offline dataset audit, baseline models, and Task 5
+- `services/ml/` — offline dataset audit, baseline models, and calibrated
   validation-only ensemble development.
 - `tests/` — future cross-component and acceptance tests.
 - `data/` — data-handling policy only; raw/local datasets are not committed.
@@ -63,7 +63,9 @@ Never commit financial datasets, `creditcard.csv`, real environment files, crede
 
 ## Development status
 
-Tasks 1-4 are implemented. Task 5 development and reproducibility checks are
-complete and paused at the M4 threshold-profile approval gate. The offline ML
-ensemble is not connected to the live API, and the frontend remains an
-operational shell rather than a fraud dashboard.
+The ingestion, streaming, and ensemble-development foundations are implemented.
+Ensemble development and reproducibility checks are complete and paused at the
+M4 threshold-profile approval gate. The frontend reads live ingestion and
+stream-processing aggregates from PostgreSQL through the backend dashboard API.
+The offline ML ensemble remains disconnected, so no fraud score or payment
+decision is presented as live.

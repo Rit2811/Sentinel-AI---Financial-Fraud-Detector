@@ -15,8 +15,9 @@ SPLIT_IMPLEMENTATION_BLOB = "6c787249cd245d9ba3d4595591f60544b8e25257"
 
 
 @dataclass(frozen=True)
-class Task5Config:
-    version: str = "task5-development-v1"
+class EnsembleConfig:
+    version: str = "ensemble-development-v1"
+    bundle_schema_version: str = "ensemble-bundle-v1"
     seed: int = 42
     folds: int = 5
     calibration_bins: int = 10
@@ -24,6 +25,13 @@ class Task5Config:
     fusion_regularization: float = 0.05
     minimum_fusion_weight: float = 0.01
     probability_tolerance: float = 1e-12
+    ranking_regression_tolerance: float = 0.01
+    fusion_average_precision_tolerance: float = 0.002
+    fusion_log_loss_tolerance: float = 0.02
+    fusion_policy_recall_tolerance: float = 0.02
+    fusion_stability_tolerance: float = 0.02
+    precision_recall_curve_points: int = 201
+    review_budgets: tuple[int, ...] = (100, 500, 1000)
     action_rate_grid: tuple[float, ...] = (0.0025, 0.005, 0.01, 0.02, 0.05)
     block_rate_grid: tuple[float, ...] = (0.0005, 0.001, 0.0025, 0.005, 0.01)
 

@@ -129,6 +129,12 @@ try {
         throw "Task 3 smoke check returned an unexpected response"
     }
 
+    Write-Output "[smoke] operational dashboard API"
+    $Dashboard = Invoke-RestMethod -Uri "http://127.0.0.1:$ApiPort/api/v1/dashboard?range=24h" -TimeoutSec 10
+    if ($Dashboard.schema_version -ne "1.0" -or $Dashboard.range -ne "24h" -or $Dashboard.summary.total_events -lt 1) {
+        throw "Dashboard smoke check returned an unexpected response"
+    }
+
     Write-Output "[failure semantics] pause Redis; health stays live and readiness fails"
     Invoke-Compose pause redis
     $HealthWhileRedisDown = Invoke-RestMethod -Uri "http://127.0.0.1:$ApiPort/health" -TimeoutSec 10

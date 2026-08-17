@@ -55,6 +55,7 @@ echo "[smoke] API and web"
 curl --fail --silent --show-error http://127.0.0.1:${API_PORT:-18000}/health
 curl --fail --silent --show-error http://127.0.0.1:${API_PORT:-18000}/ready
 curl --fail --silent --show-error http://127.0.0.1:${WEB_PORT:-15173}/ >/dev/null
+curl --fail --silent --show-error "http://127.0.0.1:${API_PORT:-18000}/api/v1/dashboard?range=24h" | grep -q '"schema_version":"1.0"'
 
 echo "[failure semantics] pause Redis; health stays live and readiness fails"
 "${COMPOSE[@]}" pause redis
@@ -72,4 +73,4 @@ curl --fail --silent --show-error http://127.0.0.1:${API_PORT:-18000}/ready >/de
 echo "[logs] recent bounded output"
 "${COMPOSE[@]}" logs --no-color --tail=100
 
-echo "Task 2/3 regression and Task 4 code verification passed"
+echo "Task 2/3 regression, Task 4 streaming, and operational dashboard verification passed"

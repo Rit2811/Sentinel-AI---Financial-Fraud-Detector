@@ -17,7 +17,8 @@ dev = ["pytest>=8.3,<9", "ruff>=0.11,<0.12"]
 [project.scripts]
 fraud-audit = "fraud_ml.cli:audit_main"
 fraud-baselines = "fraud_ml.cli:baseline_main"
-fraud-task5-develop = "fraud_ml.task5.development:main"
+fraud-ensemble-develop = "fraud_ml.ensemble.development:main"
+fraud-ensemble-smoke = "fraud_ml.ensemble.bundle:main"
 
 [build-system]
 requires = ["hatchling"]

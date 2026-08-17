@@ -22,6 +22,33 @@ export const openApiDocument = {
         },
       },
     },
+    '/api/v1/dashboard': {
+      get: {
+        summary: 'Read a non-sensitive operational dashboard snapshot',
+        description:
+          'Returns PostgreSQL-backed ingestion and stream-processing aggregates. It does not return fraud scores or payment decisions.',
+        parameters: [
+          {
+            in: 'query',
+            name: 'range',
+            required: false,
+            schema: { enum: ['1h', '24h', '7d'], default: '24h' },
+          },
+        ],
+        responses: {
+          200: {
+            description: 'Current aggregate dashboard snapshot',
+            content: {
+              'application/json': {
+                schema: { $ref: '#/components/schemas/DashboardSnapshotV1' },
+              },
+            },
+          },
+          400: { description: 'Unsupported activity range' },
+          503: { description: 'PostgreSQL dashboard query unavailable' },
+        },
+      },
+    },
     '/api/v1/authorization-events': {
       post: {
         summary: 'Ingest one version 1 authorization event',
@@ -72,6 +99,44 @@ export const openApiDocument = {
   },
   components: {
     schemas: {
+      DashboardActivityBucketV1: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['started_at', 'ingested', 'processed', 'rejected'],
+        properties: {
+          started_at: { type: 'string', format: 'date-time' },
+          ingested: { type: 'integer', minimum: 0 },
+          processed: { type: 'integer', minimum: 0 },
+          rejected: { type: 'integer', minimum: 0 },
+        },
+      },
+      DashboardSnapshotV1: {
+        type: 'object',
+        additionalProperties: false,
+        required: [
+          'schema_version',
+          'generated_at',
+          'range',
+          'window',
+          'summary',
+          'channels',
+          'activity',
+        ],
+        properties: {
+          schema_version: { const: '1.0' },
+          generated_at: { type: 'string', format: 'date-time' },
+          range: { enum: ['1h', '24h', '7d'] },
+          window: { type: 'object' },
+          summary: { type: 'object' },
+          channels: { type: 'object' },
+          activity: {
+            type: 'array',
+            items: {
+              $ref: '#/components/schemas/DashboardActivityBucketV1',
+            },
+          },
+        },
+      },
       AuthorizationEventV1: {
         type: 'object',
         additionalProperties: false,

@@ -1,6 +1,6 @@
 import pandas as pd
 
-from fraud_ml.task5.access import development_partitions
+from fraud_ml.ensemble.access import development_partitions
 
 
 def test_development_partitions_expose_no_test_frame():
