@@ -1,71 +1,101 @@
-# Sentinel AI — Adaptive Financial Fraud Detection
+# Sentinel AI
 
-Sentinel AI is planned as a real-time, self-adapting platform for detecting fraudulent financial transactions. Its intended architecture combines streaming ingestion, online feature engineering, adaptive class-imbalance handling, heterogeneous ensemble scoring, concept-drift monitoring, incremental updates, and configurable allow/review/block decisions.
+Sentinel AI is a local prototype for receiving synthetic financial authorization events, moving them through a reliable event stream, and displaying operational activity in a web dashboard. The repository also contains a separate offline machine-learning workspace for fraud-model experiments.
 
-## Current phase
+This is not a production payment system. The offline ML ensemble is not connected to the live API, so the application does not currently return fraud scores or Allow/Review/Block decisions.
 
-Tasks 1-4 provide an Express authorization-event ingestion boundary, reliable
-Redis Stream publisher/consumer workers, PostgreSQL audit persistence, an
-offline Python ML baseline lane, a PostgreSQL-backed React/Vite operational
-dashboard, and an isolated Docker Compose stack. Validation-only ensemble development adds
-calibrated probabilities, a weighted hybrid ensemble, and measured decision
-profiles. The locked test partition remains unopened pending the required M4,
-M5, and M6 approvals.
+## What is implemented
 
-## Repository map
+- A Node.js and Express API for validated, idempotent authorization-event ingestion.
+- PostgreSQL persistence for accepted events, rejected attempts, quarantined events, the transactional outbox, and processing receipts.
+- Redis Streams publisher and consumer workers with retries, deduplication, idle-message recovery, and dead-letter handling.
+- A React and Vite dashboard showing ingestion and stream-processing aggregates.
+- An offline Python workspace for dataset checks, four baseline models, probability calibration, ensemble comparison, and threshold analysis.
+- Docker Compose, migrations, automated tests, formatting, linting, and verification scripts.
 
-- `backend/` — Node.js 22/Express authorization ingestion API, migrations, and tests.
-- `frontend/` — Node 22/React/Vite live operational dashboard and tests.
-- `packages/` — future shared contracts and reusable packages.
-- `infrastructure/` — isolated four-service local Compose stack.
-- `scripts/` — unified Task 2 verification implementation.
-- `services/ml/` — offline dataset audit, baseline models, and calibrated
-  validation-only ensemble development.
-- `tests/` — future cross-component and acceptance tests.
-- `data/` — data-handling policy only; raw/local datasets are not committed.
-- `docs/` — repository documentation and authoritative planning inputs.
+## Repository structure
 
-Read `AGENTS.md` before making changes and consult `docs/planning/` before architectural work.
+- `backend/` - Express API, database migrations, stream workers, and backend tests.
+- `frontend/` - React dashboard, styles, API adapter, and frontend tests.
+- `services/ml/` - offline Python model-development and evaluation code.
+- `infrastructure/` - Docker Compose configuration.
+- `scripts/` - setup, verification, and cleanup scripts for Windows and Bash.
+- `docs/` - checked-in technical documentation.
+- `data/` - data-handling guidance; datasets are kept out of Git.
+- `packages/` and `tests/` - placeholders for future shared code and system-level tests.
 
-## Prerequisites
+## Local architecture
 
-Install Git, Docker Desktop with Compose, Python 3.12 managed by `uv`, Node.js 22 with npm, GNU Make, Bash, and curl.
+Docker Compose runs six processes:
 
-## Local workflow
+1. `postgres` stores events, audit records, outbox entries, and dashboard data.
+2. `redis` provides the local event stream.
+3. `api` validates and stores authorization events and serves dashboard data.
+4. `publisher` moves committed outbox entries from PostgreSQL to Redis Streams.
+5. `consumer` processes stream messages and records deduplicated receipts.
+6. `web` serves the compiled dashboard through Nginx and proxies API requests.
 
-The default ports are deliberately separate from other local projects:
+The ML workspace runs separately and does not participate in this live flow yet.
 
-| Service | Local URL/port |
+## Requirements
+
+- Docker Desktop with Docker Compose
+- Node.js 22 and npm
+- Python 3.12 and `uv`
+- GNU Make
+- Git
+
+## Run locally
+
+```bash
+make bootstrap
+make up
+```
+
+Local endpoints:
+
+| Component | Address |
 | --- | --- |
-| Web | `http://127.0.0.1:15173` |
+| Dashboard | `http://127.0.0.1:15173` |
 | API health | `http://127.0.0.1:18000/health` |
 | API readiness | `http://127.0.0.1:18000/ready` |
+| API documentation | `http://127.0.0.1:18000/docs` |
 | PostgreSQL | `127.0.0.1:15432` |
 | Redis | `127.0.0.1:16379` |
 
-Copy `.env.example` to an ignored `.env` only when local overrides are needed. The checked-in defaults are safe placeholders and allow startup without that file.
+Useful commands:
 
 ```bash
-make bootstrap  # install exactly locked host dependencies
-make up         # build and start six healthy services
-make ps         # show service and health state
-make logs       # show the most recent bounded logs
-make verify     # run Task 2 regressions plus Task 3 migrations, tests, and smoke checks
-make down       # stop containers; preserve volumes
-make clean      # remove generated caches/builds; preserve volumes
+make ps       # show service status
+make logs     # show recent logs
+make verify   # run repository checks and integration tests
+make down     # stop containers and preserve data volumes
+make clean    # remove generated local files and preserve data volumes
 ```
 
-Compose uses the fixed project name `sentinel-ai`, dedicated named volumes, a dedicated project network, and localhost-only ports. It does not connect to or operate on UniHub resources.
+Copy `.env.example` to `.env` only when local overrides are needed. The default configuration uses local placeholder credentials and binds published ports to `127.0.0.1`.
 
-## Data and secrets
+## ML workspace
 
-Never commit financial datasets, `creditcard.csv`, real environment files, credentials, model artifacts, logs, caches, or generated output. `.env.example` is documentation only and must never contain real values.
+The ML code is under `services/ml/`. It currently supports:
 
-## Development status
+- dataset auditing and chronological splitting;
+- Logistic Regression, Linear SVM, Random Forest, and KNN baselines;
+- validation-only probability calibration and ensemble comparison;
+- generation and verification of local model bundles.
 
-The ingestion, streaming, and ensemble-development foundations are implemented.
-Ensemble development and reproducibility checks are complete and paused at the
-M4 threshold-profile approval gate. The frontend reads live ingestion and
-stream-processing aggregates from PostgreSQL through the backend dashboard API.
-The offline ML ensemble remains disconnected, so no fraud score or payment
-decision is presented as live.
+Datasets, credentials, reports, and model artifacts are intentionally ignored by Git. See `services/ml/README.md` for commands and current evaluation boundaries.
+
+## Current limitations
+
+- No live ML inference or transaction fraud score.
+- No approved production decision thresholds.
+- No authentication or analyst case-management workflow.
+- No concept-drift monitoring or automated retraining.
+- No production deployment, compliance approval, or real card-data processing.
+
+The next major integration step is to define a live feature pipeline and connect an approved model bundle to the event-processing flow.
+
+## Data safety
+
+Use only synthetic or tokenized authorization events. Do not commit raw financial datasets, real credentials, cardholder data, generated reports, or model artifacts.
