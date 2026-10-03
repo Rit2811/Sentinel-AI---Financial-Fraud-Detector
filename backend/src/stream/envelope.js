@@ -1,3 +1,5 @@
+import { isWholeSecondUtcTimestamp } from '../contracts/authorizationEvent.js'
+
 const envelopeKeys = [
   'authorization_id',
   'correlation_id',
@@ -20,6 +22,15 @@ export function validateEnvelope(envelope) {
     if (typeof envelope[key] !== 'string' || envelope[key].length === 0) {
       throw new Error('invalid_stream_envelope')
     }
+  }
+  if (!(
+    (envelope.schema_version === '1.0' &&
+      envelope.data_origin === 'synthetic_enriched') ||
+    (envelope.schema_version === '2.0' &&
+      envelope.data_origin === 'sparkov_replay' &&
+      isWholeSecondUtcTimestamp(envelope.occurred_at))
+  )) {
+    throw new Error('invalid_stream_envelope')
   }
   return envelope
 }

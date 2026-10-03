@@ -1,0 +1,33 @@
+name: sentinel-task4-test
+
+services:
+  postgres:
+    image: postgres:16.4-alpine3.20
+    environment:
+      POSTGRES_DB: sentinel_task4_test
+      POSTGRES_USER: sentinel
+      POSTGRES_PASSWORD: sentinel_test_only
+    ports:
+      - "127.0.0.1:${TEST_POSTGRES_PORT:-25432}:5432"
+    tmpfs:
+      - /var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sentinel -d sentinel_task4_test"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 5s
+
+  redis:
+    image: redis:7.2.5-alpine3.20
+    command: ["redis-server", "--save", "", "--appendonly", "no", "--requirepass", "sentinel_test_only"]
+    ports:
+      - "127.0.0.1:${TEST_REDIS_PORT:-26379}:6379"
+    tmpfs:
+      - /data
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "sentinel_test_only", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 5s

@@ -8,6 +8,7 @@ import {
   insertAttempt,
   insertOutboxEvent,
   insertQuarantinedEvent,
+  persistAcceptedAuthorization,
 } from '../repositories/authorizationEventRepository.js'
 import { canonicalize, sha256 } from './hashing.js'
 
@@ -29,6 +30,12 @@ function responseBody({
     outcome,
     reason_codes: reasonCodes,
     received_at: receivedAt,
+    ...(event.schema_version === '2.0' && outcome === 'accepted'
+      ? {
+          processing_status: 'pending',
+          result_location: `/api/v1/transactions/${event.event_id}/result`,
+        }
+      : {}),
   }
 }
 
@@ -94,6 +101,30 @@ export function createAuthorizationIngestionService(pool, log) {
         const ingestionId = randomUUID()
         const quarantined = quarantineReasonCodes.length > 0
         const outcome = quarantined ? 'quarantined' : 'accepted'
+        if (!quarantined && event.schema_version === '2.0') {
+          const body = responseBody({
+            ingestionId,
+            event,
+            correlationId,
+            outcome,
+            reasonCodes: [],
+            receivedAt,
+          })
+          await persistAcceptedAuthorization(
+            client,
+            event,
+            {
+              ingestionId,
+              correlationId,
+              keyHash,
+              payloadHash,
+              receivedAt,
+            },
+            body,
+          )
+          await client.query('COMMIT')
+          return { status: 202, body }
+        }
         if (quarantined) {
           await insertQuarantinedEvent(
             client,

@@ -9,7 +9,12 @@ import {
   DashboardUnavailableError,
   UnsupportedDashboardRangeError,
 } from '../src/services/dashboardService.js'
-import { cardNotPresent, correlationId, idempotencyKey } from './fixtures.js'
+import {
+  cardNotPresent,
+  correlationId,
+  idempotencyKey,
+  sparkovReplay,
+} from './fixtures.js'
 
 const log = { info: jest.fn(), warn: jest.fn(), error: jest.fn() }
 const recordRejectedAttempt = jest.fn(async () => randomUUID())
@@ -35,6 +40,43 @@ function postEvent(app, body = cardNotPresent()) {
 
 describe('HTTP ingestion boundary', () => {
   beforeEach(() => jest.clearAllMocks())
+
+  test('passes the original v2 payload to ingestion without enrichment', async () => {
+    const event = sparkovReplay()
+    const ingest = jest.fn(async () => ({
+      status: 202,
+      body: { outcome: 'accepted', schema_version: '2.0' },
+    }))
+    expect((await postEvent(appWith(ingest), event)).status).toBe(202)
+    expect(ingest.mock.calls[0][0].event).toEqual(event)
+  })
+
+  test.each([
+    'cc_num',
+    'is_fraud',
+    'first',
+    'last',
+    'street',
+    'trans_num',
+    'unix_time',
+  ])(
+    'rejects nested %s without ingestion, persistence or echoing the raw value',
+    async (field) => {
+      const ingest = jest.fn()
+      const marker = 'private-source-marker'
+      const response = await postEvent(appWith(ingest), {
+        ...sparkovReplay(),
+        extra: [{ [field]: marker }],
+      })
+      expect(response.status).toBe(422)
+      expect(response.body.code).toBe('prohibited_field')
+      expect(JSON.stringify(response.body)).not.toContain(marker)
+      expect(ingest).not.toHaveBeenCalled()
+      expect(JSON.stringify(recordRejectedAttempt.mock.calls)).not.toContain(
+        marker,
+      )
+    },
+  )
 
   test('preserves Task 2 liveness', async () => {
     const response = await request(appWith(jest.fn())).get('/health')
@@ -163,6 +205,15 @@ describe('HTTP ingestion boundary', () => {
     expect(response.body.components.examples.CardNotPresent.value).toEqual(
       cardNotPresent(),
     )
+    expect(response.body.components.examples.SparkovReplay.value).toEqual(
+      sparkovReplay(),
+    )
+    expect(
+      operation.requestBody.content['application/json'].schema.oneOf,
+    ).toHaveLength(2)
+    const v2 = response.body.components.schemas.AuthorizationEventV2
+    expect(v2.additionalProperties).toBe(false)
+    expect([...v2.required].sort()).toEqual(Object.keys(sparkovReplay()).sort())
     expect(
       response.body.paths['/api/v1/dashboard'].get.responses,
     ).toHaveProperty('200')

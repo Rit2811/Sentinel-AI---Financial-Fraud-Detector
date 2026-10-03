@@ -1,6 +1,8 @@
 $ErrorActionPreference = "Stop"
 $RepoRoot = Split-Path -Parent $PSScriptRoot
 $ComposeFile = Join-Path $RepoRoot "infrastructure\compose.yaml"
+$TestComposeFile = Join-Path $RepoRoot "infrastructure\compose.test.yaml"
+$TestComposeStarted = $false
 
 function Invoke-Checked {
     param(
@@ -16,6 +18,11 @@ function Invoke-Checked {
 function Invoke-Compose {
     param([Parameter(ValueFromRemainingArguments)] [string[]] $Arguments)
     Invoke-Checked docker compose -f $ComposeFile @Arguments
+}
+
+function Invoke-TestCompose {
+    param([Parameter(ValueFromRemainingArguments)] [string[]] $Arguments)
+    Invoke-Checked docker compose -p sentinel-task4-test -f $TestComposeFile @Arguments
 }
 
 try {
@@ -37,7 +44,7 @@ try {
         $PreviousUvPython = $env:UV_PYTHON_INSTALL_DIR
         $env:UV_CACHE_DIR = ".uv-cache"
         $env:UV_PYTHON_INSTALL_DIR = ".uv-python"
-        Invoke-Checked uv sync --locked
+        Invoke-Checked uv sync --locked --extra worker
         Invoke-Checked uv run ruff format --check .
         Invoke-Checked uv run ruff check .
         Invoke-Checked uv run pytest -q
@@ -62,6 +69,7 @@ try {
 
     Write-Output "[compose] validate, build, start, wait"
     Invoke-Compose config --quiet
+    Invoke-TestCompose config --quiet
     Invoke-Compose build
     Invoke-Compose up -d --wait
     Invoke-Compose ps
@@ -72,23 +80,49 @@ try {
     $PostgresDatabase = if ($env:POSTGRES_DB) { $env:POSTGRES_DB } else { "sentinel" }
     $PostgresUser = if ($env:POSTGRES_USER) { $env:POSTGRES_USER } else { "sentinel" }
     $PostgresPassword = if ($env:POSTGRES_PASSWORD) { $env:POSTGRES_PASSWORD } else { "sentinel_local_only" }
-    $Task3DatabaseUrl = "postgresql://${PostgresUser}:${PostgresPassword}@127.0.0.1:${PostgresPort}/${PostgresDatabase}"
+    $ApplicationDatabaseUrl = "postgresql://${PostgresUser}:${PostgresPassword}@127.0.0.1:${PostgresPort}/${PostgresDatabase}"
+    $TestPostgresPort = if ($env:TEST_POSTGRES_PORT) { $env:TEST_POSTGRES_PORT } else { "25432" }
+    $TestRedisPort = if ($env:TEST_REDIS_PORT) { $env:TEST_REDIS_PORT } else { "26379" }
+    $IsolatedTestDatabaseUrl = "postgresql://sentinel:sentinel_test_only@127.0.0.1:${TestPostgresPort}/sentinel_task4_test"
 
-    Write-Output "[database] Task 3 empty migration cycle and integration tests"
+    Write-Output "[database] forward-only application migrations"
     Push-Location (Join-Path $RepoRoot "backend")
     try {
         $PreviousDatabaseUrl = $env:DATABASE_URL
         $PreviousTestDatabaseUrl = $env:TEST_DATABASE_URL
-        $env:DATABASE_URL = $Task3DatabaseUrl
-        $env:TEST_DATABASE_URL = $Task3DatabaseUrl
+        $PreviousTestRedisUrl = $env:TEST_REDIS_URL
+        $env:DATABASE_URL = $ApplicationDatabaseUrl
+        Invoke-Checked npm run migrate:up
+
+        Write-Output "[database] disposable test migration cycle and integration tests"
+        $TestComposeStarted = $true
+        Invoke-TestCompose up -d --wait --force-recreate
+        $env:DATABASE_URL = $IsolatedTestDatabaseUrl
+        $env:TEST_DATABASE_URL = $IsolatedTestDatabaseUrl
+        $env:TEST_REDIS_URL = "redis://:sentinel_test_only@127.0.0.1:${TestRedisPort}/0"
         Invoke-Checked npm run migrate:up
         Invoke-Checked npm run migrate:down
         Invoke-Checked npm run migrate:up
         Invoke-Checked npm run test:integration
+
+        Write-Output '[ml] isolated scoring recovery checks'
+        $PreviousRedisRestart = $env:TEST_REDIS_RESTART
+        Push-Location (Join-Path (Join-Path $RepoRoot 'services') 'ml')
+        try {
+            $env:TEST_REDIS_RESTART = '1'
+            New-Item -ItemType Directory -Path 'artifacts' -Force | Out-Null
+            $ScoringTestTemp = Join-Path 'artifacts' ('verification-temp-' + [guid]::NewGuid().ToString())
+            Invoke-Checked uv run --extra worker pytest tests/test_worker.py -q -p no:cacheprovider --basetemp $ScoringTestTemp
+        }
+        finally {
+            $env:TEST_REDIS_RESTART = $PreviousRedisRestart
+            Pop-Location
+        }
     }
     finally {
         $env:DATABASE_URL = $PreviousDatabaseUrl
         $env:TEST_DATABASE_URL = $PreviousTestDatabaseUrl
+        $env:TEST_REDIS_URL = $PreviousTestRedisUrl
         Pop-Location
     }
 
@@ -166,5 +200,8 @@ try {
     Write-Output "Task 2/3 regression and Task 4 code verification passed"
 }
 finally {
+    if ($TestComposeStarted) {
+        & docker compose -p sentinel-task4-test -f $TestComposeFile down | Out-Null
+    }
     & docker compose -f $ComposeFile down | Out-Null
 }

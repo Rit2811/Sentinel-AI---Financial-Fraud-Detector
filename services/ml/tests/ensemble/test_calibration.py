@@ -3,19 +3,17 @@ import numpy as np
 from fraud_ml.ensemble.calibration import (
     assert_probability_bounds,
     chronological_stability_metrics,
-    cross_fitted_calibration,
+    probability_metrics,
 )
 from fraud_ml.ensemble.config import EnsembleConfig
 
 
-def test_cross_fitted_calibration_is_deterministic_and_bounded():
-    raw = np.linspace(-3, 3, 100)
-    target = np.array([0] * 90 + [1] * 10)
-    config = EnsembleConfig(folds=5)
-    first = cross_fitted_calibration(raw, target, "sigmoid", config)
-    second = cross_fitted_calibration(raw, target, "sigmoid", config)
-    np.testing.assert_allclose(first, second)
-    assert_probability_bounds(first, config)
+def test_probability_metrics_report_calibration_without_fitting():
+    evidence = probability_metrics([0, 1, 0, 1], [0.1, 0.9, 0.2, 0.8], bins=5)
+    assert np.isclose(evidence["brier_score"], 0.025)
+    assert np.isclose(evidence["expected_calibration_error"], 0.15)
+    assert evidence["average_precision"] == 1.0
+    assert sum(row["count"] for row in evidence["reliability_bins"]) == 4
 
 
 def test_probability_guard_rejects_invalid_values():

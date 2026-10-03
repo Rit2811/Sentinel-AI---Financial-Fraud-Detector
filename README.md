@@ -2,7 +2,7 @@
 
 Sentinel AI is a local prototype for receiving synthetic financial authorization events, moving them through a reliable event stream, and displaying operational activity in a web dashboard. The repository also contains a separate offline machine-learning workspace for fraud-model experiments.
 
-This is not a production payment system. The offline ML ensemble is not connected to the live API, so the application does not currently return fraud scores or Allow/Review/Block decisions.
+The active dataset is Sparkov-derived `kartik2112/fraud-detection/versions/1`. This is not a production payment system. Task 5's frozen Random Forest passed its authorized final test. Task 6's connected worker is implemented, but application activation and full workload acceptance remain pending.
 
 ## What is implemented
 
@@ -10,7 +10,9 @@ This is not a production payment system. The offline ML ensemble is not connecte
 - PostgreSQL persistence for accepted events, rejected attempts, quarantined events, the transactional outbox, and processing receipts.
 - Redis Streams publisher and consumer workers with retries, deduplication, idle-message recovery, and dead-letter handling.
 - A React and Vite dashboard showing ingestion and stream-processing aggregates.
-- An offline Python workspace for dataset checks, four baseline models, probability calibration, ensemble comparison, and threshold analysis.
+- An offline Python workspace for pinned Sparkov source auditing, shared point-in-time features and four chronological baseline models.
+- An approved frozen, sigmoid-calibrated Random Forest, a separate development-only four-model ensemble, and a prepared durable Python scoring worker.
+- Immutable scoring/history evidence, separate simulated actions, protected result retrieval, and authorized idempotent human review resolution.
 - Docker Compose, migrations, automated tests, formatting, linting, and verification scripts.
 
 ## Repository structure
@@ -35,7 +37,7 @@ Docker Compose runs six processes:
 5. `consumer` processes stream messages and records deduplicated receipts.
 6. `web` serves the compiled dashboard through Nginx and proxies API requests.
 
-The ML workspace runs separately and does not participate in this live flow yet.
+The optional `scoring-worker` Compose profile adds Python inference. Application activation is gated by the frozen package, passing model evaluation and zero-expiry workload evidence; ordinary `make up` does not authorize scoring. See `docs/task-6-verification-record.md` for the current deployment status.
 
 ## Requirements
 
@@ -81,20 +83,21 @@ The ML code is under `services/ml/`. It currently supports:
 
 - dataset auditing and chronological splitting;
 - Logistic Regression, Linear SVM, Random Forest, and KNN baselines;
-- validation-only probability calibration and ensemble comparison;
-- generation and verification of local model bundles.
+- chronological calibration, measured model/policy comparisons and one completed owner-authorized frozen-RF reserved-test evaluation;
+- historical/replay feature parity, without raw card numbers or scoring labels.
 
 Datasets, credentials, reports, and model artifacts are intentionally ignored by Git. See `services/ml/README.md` for commands and current evaluation boundaries.
 
 ## Current limitations
 
-- No live ML inference or transaction fraud score.
-- No approved production decision thresholds.
-- No authentication or analyst case-management workflow.
+- Application scoring activation remains blocked until Task 6's workload gates pass; the worker/result/action path exists and is tested in isolation.
+- RF thresholds are approved for this local synthetic prototype, not production banking traffic. The four-model ensemble is not selected for serving.
+- Result/review APIs have local bearer-token authorization; full user authentication, role-based access and analyst case-management UI are not implemented.
+- The existing dashboard reports ingestion/stream activity, not a complete scoring/review workflow.
 - No concept-drift monitoring or automated retraining.
 - No production deployment, compliance approval, or real card-data processing.
 
-The next major integration step is to define a live feature pipeline and connect an approved model bundle to the event-processing flow.
+Task 4 gates passed on 2026-10-01. Task 5 passed on 2026-10-02: approved sigmoid RF (Review 0.10, Block 0.25), frozen package, clean-load parity and one authorized reserved-test evaluation without tuning. The actual application database has migrations 0001-0009 with verified isolated backup restoration. Task 6 still needs zero-expiry peak-load evidence followed by actual application activation/action/restart verification. See `docs/task-5-final-test-record.md` and `docs/task-6-verification-record.md` for current evidence; earlier planning documents are historical checkpoints. Task 7 is not started or precisely specified by the supplied Task 5/6 guides.
 
 ## Data safety
 

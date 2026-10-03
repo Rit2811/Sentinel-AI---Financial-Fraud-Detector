@@ -1,6 +1,24 @@
 export const correlationId = '985d24e4-42be-4e3b-bb9a-ad43664ca053'
 export const idempotencyKey = '4f93f5fb-44f8-4d0a-9f69-c72466ad6402'
 
+export function sparkovReplay(overrides = {}) {
+  return {
+    schema_version: '2.0',
+    event_id: 'd6a69ef3-8b61-5f3c-b87d-ce5e0db51299',
+    authorization_id: 'afd883d1-8f43-5dfb-b944-3a77b10349e5',
+    occurred_at: '2019-01-01T00:00:00Z',
+    data_origin: 'sparkov_replay',
+    amount_minor: 1234,
+    currency: 'USD',
+    card_token: `card_${'a'.repeat(64)}`,
+    merchant_id: `merchant_${'b'.repeat(64)}`,
+    merchant_category: 'grocery_pos',
+    time_basis: 'source_wall_clock_as_utc',
+    currency_basis: 'simulation_assumption',
+    ...overrides,
+  }
+}
+
 export function cardNotPresent(overrides = {}) {
   return {
     schema_version: '1.0',

@@ -4,9 +4,108 @@ export const openApiDocument = {
     title: 'Sentinel AI Authorization Ingestion API',
     version: '1.0.0',
     description:
-      'Synthetic/tokenized event ingestion only; no fraud or payment decision is returned.',
+      'Synthetic event ingestion and gated, protected stored-result retrieval. No scoring worker is active during Task 6 preparation.',
   },
   paths: {
+    '/api/v1/transactions/{eventId}/review-resolution': {
+      post: {
+        summary:
+          'Resolve a pending simulated review once; preserve the model action',
+        description:
+          'Uses a separate REVIEW_API_TOKEN bound to server-configured REVIEWER_ID and SCORING_RUN_ID. No confirmed fraud label is created. Never include card numbers or personal data in notes.',
+        security: [{ ReviewBearer: [] }],
+        parameters: [
+          {
+            in: 'path',
+            name: 'eventId',
+            required: true,
+            schema: { type: 'string', format: 'uuid' },
+          },
+        ],
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                additionalProperties: false,
+                required: ['resolution_id', 'resolution', 'notes'],
+                properties: {
+                  resolution_id: { type: 'string', format: 'uuid' },
+                  resolution: { enum: ['allow', 'reject'] },
+                  notes: { type: 'string', minLength: 1, maxLength: 2000 },
+                },
+              },
+            },
+          },
+        },
+        responses: {
+          200: {
+            description: 'Identical retry returns the original resolution',
+          },
+          201: {
+            description:
+              'Human resolution and simulated outcome durably recorded',
+          },
+          400: { description: 'Invalid UUID or JSON' },
+          401: { description: 'Invalid reviewer credential' },
+          404: { description: 'No review execution exists' },
+          409: {
+            description:
+              'Not a pending review, already resolved differently, or reused resolution identity',
+          },
+          413: { description: 'Body too large' },
+          415: { description: 'JSON required' },
+          422: { description: 'Invalid fields, resolution or notes' },
+          503: {
+            description:
+              'Review access is unconfigured or storage is unavailable',
+          },
+        },
+      },
+    },
+    '/ready/scoring': {
+      get: {
+        summary: 'Scoring readiness, separate from infrastructure readiness',
+        responses: {
+          503: { description: 'Scoring is not activated during preparation' },
+        },
+      },
+    },
+    '/api/v1/transactions/{eventId}/result': {
+      get: {
+        summary:
+          'Retrieve the original stored scoring state for the configured run',
+        description:
+          'Requires RESULT_API_TOKEN and SCORING_RUN_ID. Pending and unavailable states have no score/action. Model action is not simulator execution or confirmed fraud.',
+        security: [{ ResultBearer: [] }],
+        parameters: [
+          {
+            in: 'path',
+            name: 'eventId',
+            required: true,
+            schema: { type: 'string', format: 'uuid' },
+          },
+        ],
+        responses: {
+          200: {
+            description: 'Stored state; no decision is inferred from ingestion',
+            content: {
+              'application/json': {
+                schema: { $ref: '#/components/schemas/ScoringResult' },
+              },
+            },
+          },
+          400: { description: 'Invalid event UUID' },
+          401: { description: 'Missing or invalid access token' },
+          404: { description: 'No accepted event exists' },
+          503: {
+            description:
+              'Result access is not configured, schema is absent or storage is unavailable',
+          },
+        },
+      },
+    },
     '/health': {
       get: {
         summary: 'Process liveness',
@@ -51,7 +150,7 @@ export const openApiDocument = {
     },
     '/api/v1/authorization-events': {
       post: {
-        summary: 'Ingest one version 1 authorization event',
+        summary: 'Ingest one version 1 or Sparkov version 2 event',
         parameters: [
           {
             in: 'header',
@@ -70,12 +169,18 @@ export const openApiDocument = {
           required: true,
           content: {
             'application/json': {
-              schema: { $ref: '#/components/schemas/AuthorizationEventV1' },
+              schema: {
+                oneOf: [
+                  { $ref: '#/components/schemas/AuthorizationEventV1' },
+                  { $ref: '#/components/schemas/AuthorizationEventV2' },
+                ],
+              },
               examples: {
                 cardNotPresent: {
                   $ref: '#/components/examples/CardNotPresent',
                 },
                 cardPresent: { $ref: '#/components/examples/CardPresent' },
+                sparkovReplay: { $ref: '#/components/examples/SparkovReplay' },
               },
             },
           },
@@ -98,7 +203,89 @@ export const openApiDocument = {
     },
   },
   components: {
+    securitySchemes: {
+      ResultBearer: { type: 'http', scheme: 'bearer' },
+      ReviewBearer: { type: 'http', scheme: 'bearer' },
+    },
     schemas: {
+      ScoringResult: {
+        type: 'object',
+        properties: {
+          event_id: { type: 'string', format: 'uuid' },
+          run_id: { type: 'string', format: 'uuid' },
+          status: {
+            enum: [
+              'pending',
+              'scoring',
+              'scored',
+              'unavailable',
+              'failed',
+              'expired',
+            ],
+          },
+          available: { type: 'boolean' },
+          probability: { type: ['number', 'null'], minimum: 0, maximum: 1 },
+          risk_score: { type: ['number', 'null'], minimum: 0, maximum: 100 },
+          action: { enum: ['Pass', 'Review', 'Block', null] },
+          thresholds: { type: ['object', 'null'] },
+          versions: { type: 'object' },
+          decision_at: { type: ['string', 'null'], format: 'date-time' },
+          retryable: { type: 'boolean' },
+          reason_code: { type: ['string', 'null'] },
+          execution_state: {
+            enum: ['not_executed', 'allowed', 'pending_review', 'rejected'],
+          },
+          executed_at: { type: ['string', 'null'], format: 'date-time' },
+          review_resolution: { type: ['object', 'null'] },
+        },
+      },
+      AuthorizationEventV2: {
+        type: 'object',
+        additionalProperties: false,
+        description:
+          'Simulated replay. Source wall clock is interpreted as UTC and USD is assumed; neither is an observed source fact. Raw identifiers, labels and personal fields are forbidden recursively.',
+        required: [
+          'schema_version',
+          'event_id',
+          'authorization_id',
+          'occurred_at',
+          'data_origin',
+          'amount_minor',
+          'currency',
+          'card_token',
+          'merchant_id',
+          'merchant_category',
+          'time_basis',
+          'currency_basis',
+        ],
+        properties: {
+          schema_version: { const: '2.0' },
+          data_origin: { const: 'sparkov_replay' },
+          event_id: { type: 'string', format: 'uuid' },
+          authorization_id: { type: 'string', format: 'uuid' },
+          occurred_at: {
+            type: 'string',
+            format: 'date-time',
+            pattern: '^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}Z$',
+          },
+          amount_minor: {
+            type: 'integer',
+            minimum: 0,
+            maximum: 9007199254740991,
+          },
+          currency: { const: 'USD' },
+          card_token: { type: 'string', pattern: '^card_[0-9a-f]{64}$' },
+          merchant_id: { type: 'string', pattern: '^merchant_[0-9a-f]{64}$' },
+          merchant_category: {
+            type: 'string',
+            minLength: 1,
+            maxLength: 128,
+            pattern: '^\\S(?:[\\s\\S]*\\S)?$',
+          },
+          time_basis: { const: 'source_wall_clock_as_utc' },
+          currency_basis: { const: 'simulation_assumption' },
+        },
+      },
       DashboardActivityBucketV1: {
         type: 'object',
         additionalProperties: false,
@@ -193,6 +380,22 @@ export const openApiDocument = {
       },
     },
     examples: {
+      SparkovReplay: {
+        value: {
+          schema_version: '2.0',
+          event_id: 'd6a69ef3-8b61-5f3c-b87d-ce5e0db51299',
+          authorization_id: 'afd883d1-8f43-5dfb-b944-3a77b10349e5',
+          occurred_at: '2019-01-01T00:00:00Z',
+          data_origin: 'sparkov_replay',
+          amount_minor: 1234,
+          currency: 'USD',
+          card_token: `card_${'a'.repeat(64)}`,
+          merchant_id: `merchant_${'b'.repeat(64)}`,
+          merchant_category: 'grocery_pos',
+          time_basis: 'source_wall_clock_as_utc',
+          currency_basis: 'simulation_assumption',
+        },
+      },
       CardNotPresent: {
         value: {
           schema_version: '1.0',

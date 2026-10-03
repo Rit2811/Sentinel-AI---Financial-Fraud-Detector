@@ -1,0 +1,29 @@
+@baseUrl = http://127.0.0.1:18002
+@eventId = d6a69ef3-8b61-5f3c-b87d-ce5e0db51299
+
+### Process liveness, not model readiness
+GET {{baseUrl}}/health
+
+### Scoring is not ready during preparation (503)
+GET {{baseUrl}}/ready/scoring
+
+### Access/schema must first be configured; use a local secret, never commit it
+GET {{baseUrl}}/api/v1/transactions/{{eventId}}/result
+Authorization: Bearer {{$processEnv RESULT_API_TOKEN}}
+
+### Resolve an existing pending review; identity comes from server REVIEWER_ID
+# Repeat identical resolution_id/body to recover an uncertain response safely.
+# Do not include card numbers, personal data or confirmed fraud labels in notes.
+POST {{baseUrl}}/api/v1/transactions/{{eventId}}/review-resolution
+Authorization: Bearer {{$processEnv REVIEW_API_TOKEN}}
+Content-Type: application/json
+
+{
+  "resolution_id": "75b81317-23c8-4abd-9032-fd4c8376bbca",
+  "resolution": "allow",
+  "notes": "Reviewed synthetic transaction evidence"
+}
+
+### Unknown UUID is 404 only after authentication and database preparation
+GET {{baseUrl}}/api/v1/transactions/11111111-1111-4111-8111-111111111111/result
+Authorization: Bearer {{$processEnv RESULT_API_TOKEN}}
