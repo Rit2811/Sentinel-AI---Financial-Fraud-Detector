@@ -23,6 +23,21 @@ export const AUTHORIZATION_EVENT_FIELDS = new Set([
   'device_token',
 ])
 
+export const SPARKOV_EVENT_FIELDS = new Set([
+  'schema_version',
+  'event_id',
+  'authorization_id',
+  'occurred_at',
+  'data_origin',
+  'amount_minor',
+  'currency',
+  'card_token',
+  'merchant_id',
+  'merchant_category',
+  'time_basis',
+  'currency_basis',
+])
+
 export const PROHIBITED_FIELDS = new Set([
   'pan',
   'card_number',
@@ -34,6 +49,25 @@ export const PROHIBITED_FIELDS = new Set([
   'track1',
   'track2',
   'magnetic_stripe',
+  'cc_num',
+  'trans_num',
+  'is_fraud',
+  'first',
+  'last',
+  'gender',
+  'street',
+  'city',
+  'state',
+  'zip',
+  'job',
+  'dob',
+  'lat',
+  'long',
+  'merch_lat',
+  'merch_long',
+  'city_pop',
+  'unix_time',
+  'trans_date_trans_time',
 ])
 
 const REQUIRED_FIELDS = [
@@ -71,6 +105,7 @@ export function validateAuthorizationEvent(body) {
   if (!body || typeof body !== 'object' || Array.isArray(body)) {
     return ['body_must_be_object']
   }
+  if (body.schema_version === '2.0') return validateSparkovEvent(body)
 
   for (const field of REQUIRED_FIELDS) {
     if (!(field in body)) reasons.push(`missing_${field}`)
@@ -139,6 +174,62 @@ export function validateAuthorizationEvent(body) {
     reasons.push('ecommerce_requires_card_not_present')
   }
 
+  return [...new Set(reasons)].sort()
+}
+
+export function isWholeSecondUtcTimestamp(value) {
+  return (
+    typeof value === 'string' &&
+    /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/.test(value) &&
+    Number.isFinite(Date.parse(value)) &&
+    new Date(value).toISOString().slice(0, 19) === value.slice(0, 19)
+  )
+}
+
+function validateSparkovEvent(body) {
+  const reasons = []
+  for (const field of SPARKOV_EVENT_FIELDS) {
+    if (!Object.hasOwn(body, field)) reasons.push(`missing_${field}`)
+  }
+  if (Object.keys(body).some((field) => !SPARKOV_EVENT_FIELDS.has(field))) {
+    reasons.push('unknown_field')
+  }
+  for (const field of ['event_id', 'authorization_id']) {
+    if (typeof body[field] !== 'string' || !UUID_PATTERN.test(body[field])) {
+      reasons.push(`invalid_${field}`)
+    }
+  }
+  if (!isWholeSecondUtcTimestamp(body.occurred_at)) {
+    reasons.push('invalid_occurred_at')
+  }
+  if (body.data_origin !== 'sparkov_replay') reasons.push('invalid_data_origin')
+  if (!Number.isSafeInteger(body.amount_minor) || body.amount_minor < 0) {
+    reasons.push('invalid_amount_minor')
+  }
+  if (body.currency !== 'USD') reasons.push('invalid_currency')
+  for (const [field, pattern] of [
+    ['card_token', /^card_[0-9a-f]{64}$/],
+    ['merchant_id', /^merchant_[0-9a-f]{64}$/],
+  ]) {
+    if (typeof body[field] !== 'string' || !pattern.test(body[field])) {
+      reasons.push(`invalid_${field}`)
+    }
+  }
+  const category = body.merchant_category
+  if (
+    typeof category !== 'string' ||
+    category.length < 1 ||
+    category.length > 128 ||
+    category.trim() !== category
+  ) {
+    reasons.push('invalid_merchant_category')
+  }
+  if (body.time_basis !== 'source_wall_clock_as_utc') {
+    reasons.push('invalid_time_basis')
+  }
+  if (body.currency_basis !== 'simulation_assumption') {
+    reasons.push('invalid_currency_basis')
+  }
   return [...new Set(reasons)].sort()
 }
 

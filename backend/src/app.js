@@ -13,6 +13,11 @@ import { logger as defaultLogger } from './logger.js'
 import { openApiDocument } from './openapi.js'
 import { createAuthorizationEventsRouter } from './routes/authorizationEvents.js'
 import { createDashboardRouter } from './routes/dashboard.js'
+import { createScoringResultsRouter } from './routes/scoringResults.js'
+import { createReviewResolutionsRouter } from './routes/reviewResolutions.js'
+import { createReviewResolutionService } from './services/reviewResolutionService.js'
+import { createScoringResultService } from './services/scoringResultService.js'
+import { scoringReadiness } from './services/scoringReadinessService.js'
 import { createAuthorizationIngestionService } from './services/authorizationIngestionService.js'
 import { createDashboardService } from './services/dashboardService.js'
 import { createRejectedAttemptService } from './services/rejectedAttemptService.js'
@@ -51,6 +56,17 @@ export function createApp({
   ingestionService: suppliedIngestionService,
   dashboardService: suppliedDashboardService,
   recordRejectedAttempt: suppliedRecordRejectedAttempt,
+  scoringResultService: suppliedScoringResultService,
+  reviewResolutionService: suppliedReviewResolutionService,
+  reviewAccess = {
+    token: process.env.REVIEW_API_TOKEN,
+    runId: process.env.SCORING_RUN_ID,
+    reviewerId: process.env.REVIEWER_ID,
+  },
+  resultAccess = {
+    token: process.env.RESULT_API_TOKEN,
+    runId: process.env.SCORING_RUN_ID,
+  },
   redisFactory = () =>
     createClient({
       url: config.redisUrl,
@@ -118,6 +134,32 @@ export function createApp({
   app.get('/openapi.json', (_req, res) => res.json(openApiDocument))
   app.use('/docs', swaggerUi.serve, swaggerUi.setup(openApiDocument))
   app.use('/api/v1/dashboard', createDashboardRouter(dashboardController))
+  app.use(
+    '/api/v1/transactions',
+    createScoringResultsRouter(
+      suppliedScoringResultService ??
+        createScoringResultService(pool, resultAccess.runId),
+      resultAccess,
+    ),
+  )
+  app.get('/ready/scoring', async (_req, res) => {
+    const ready = await scoringReadiness(pool, resultAccess.runId)
+    res.status(ready ? 200 : 503).json({
+      status: ready ? 'ready' : 'not_ready',
+      code: ready
+        ? 'approved_scoring_worker_ready'
+        : 'approved_scoring_worker_not_connected',
+    })
+  })
+
+  app.use(
+    '/api/v1/transactions',
+    createReviewResolutionsRouter(
+      suppliedReviewResolutionService ??
+        createReviewResolutionService(pool, reviewAccess.runId),
+      reviewAccess,
+    ),
+  )
 
   app.use('/api/v1/authorization-events', async (req, res, next) => {
     if (!req.is('application/json')) {

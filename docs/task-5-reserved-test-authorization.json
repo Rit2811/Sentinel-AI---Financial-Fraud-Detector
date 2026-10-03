@@ -1,0 +1,12 @@
+{
+  "evaluation_kind": "reserved_test",
+  "bundle_sha256": "1e421627b7548e2a35de0e598fea23baa6996e316106346652d004c46d24d696",
+  "owner_authorized_at": "2026-10-02T12:25:10Z",
+  "timestamp_basis": "UTC recording time following explicit owner reply",
+  "owner_reply": "Authorize this exact package evaluation",
+  "maximum_evaluations": 1,
+  "threshold_changes_permitted": false,
+  "test_result_tuning_permitted": false,
+  "review_threshold": 0.1,
+  "block_threshold": 0.25
+}

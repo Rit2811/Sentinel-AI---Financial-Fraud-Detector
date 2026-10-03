@@ -1,0 +1,5 @@
+# Optional stage diagnostics; omit this file from qualified serving/load gates.
+services:
+  scoring-worker:
+    environment:
+      SCORING_PROFILE: '1'

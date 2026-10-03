@@ -52,7 +52,7 @@ def threshold_for_rate(scores, rate) -> float:
 def precision_recall_evidence(
     target,
     scores,
-    budgets=(100, 500, 1000),
+    budgets,
     maximum_curve_points=201,
 ) -> dict:
     target = np.asarray(target, dtype=int)
@@ -104,7 +104,7 @@ def precision_recall_evidence(
     }
 
 
-def fixed_rate_policy_evidence(target, scores, action_rate=0.01) -> dict:
+def fixed_rate_policy_evidence(target, scores, action_rate) -> dict:
     target = np.asarray(target, dtype=int)
     scores = np.asarray(scores, dtype=float)
     threshold = threshold_for_rate(scores, action_rate)
@@ -165,61 +165,3 @@ def decision_metrics(
         "benchmark_fraud_amount_blocked": float(amounts[block & (target == 1)].sum()),
         "estimated_decision_latency_ms_per_row": float(decision_latency_ms),
     }
-
-
-def profile_definitions() -> dict:
-    return {
-        "Conservative Block": {
-            "maximum_action_rate": 0.005,
-            "minimum_block_precision": 0.90,
-            "sort": lambda row: (
-                row["block_precision"],
-                row["precision"],
-                row["recall"],
-                -row["action_rate"],
-            ),
-        },
-        "Balanced Demo": {
-            "maximum_action_rate": 0.01,
-            "minimum_block_precision": 0.75,
-            "sort": lambda row: (
-                row["f1"],
-                row["f2"],
-                row["precision"],
-                -row["action_rate"],
-            ),
-        },
-        "Recall First": {
-            "maximum_action_rate": 0.02,
-            "minimum_block_precision": 0.50,
-            "sort": lambda row: (
-                row["recall"],
-                row["f2"],
-                row["precision"],
-                -row["action_rate"],
-            ),
-        },
-    }
-
-
-def named_profiles(tradeoffs: list[dict]) -> dict:
-    profiles = {}
-    definitions = profile_definitions()
-    for name, definition in definitions.items():
-        eligible = [
-            row
-            for row in tradeoffs
-            if row["action_rate"] <= definition["maximum_action_rate"] + 1e-12
-            and row["block_precision"] >= definition["minimum_block_precision"]
-        ]
-        profiles[name] = {
-            "constraints": {
-                "maximum_action_rate": definition["maximum_action_rate"],
-                "minimum_block_precision": definition["minimum_block_precision"],
-            },
-            "available": bool(eligible),
-            "measured_policy": (
-                max(eligible, key=definition["sort"]) if eligible else None
-            ),
-        }
-    return profiles

@@ -5,7 +5,6 @@ from fraud_ml.ensemble.config import MODEL_ORDER, EnsembleConfig
 from fraud_ml.ensemble.fusion import calibrated_matrix, optimize_weights
 from fraud_ml.ensemble.policy import (
     fixed_rate_policy_evidence,
-    named_profiles,
     precision_recall_evidence,
     threshold_tradeoffs,
 )
@@ -22,7 +21,7 @@ def test_weighted_fusion_is_deterministic_nonnegative_and_sums_to_one():
     assert np.isclose(first.sum(), 1)
 
 
-def test_threshold_profiles_are_measured_and_ordered():
+def test_explicit_threshold_tradeoffs_are_measured_and_ordered():
     target = np.array([0] * 95 + [1] * 5)
     scores = np.linspace(0, 1, 100)
     amounts = np.ones(100)
@@ -34,14 +33,10 @@ def test_threshold_profiles_are_measured_and_ordered():
         (0.01, 0.02, 0.04),
         0.1,
     )
+    assert tradeoffs
     for row in tradeoffs:
         assert 0 <= row["review_threshold"] < row["block_threshold"] <= 1
-    profiles = named_profiles(tradeoffs)
-    assert set(profiles) == {
-        "Conservative Block",
-        "Balanced Demo",
-        "Recall First",
-    }
+        assert row["action_count"] == row["review_count"] + row["block_count"]
 
 
 def test_precision_recall_and_bounded_budget_evidence_is_reported():

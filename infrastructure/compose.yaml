@@ -1,5 +1,10 @@
 name: sentinel-ai
 
+x-runtime-logging: &runtime-logging
+  options:
+    mode: non-blocking
+    max-buffer-size: 1m
+
 services:
   postgres:
     image: postgres:16.4-alpine3.20
@@ -35,6 +40,7 @@ services:
     restart: unless-stopped
 
   api:
+    logging: *runtime-logging
     image: sentinel-ai-api:task4
     build:
       context: ../backend
@@ -43,6 +49,10 @@ services:
       DATABASE_URL: postgresql://${POSTGRES_USER:-sentinel}:${POSTGRES_PASSWORD:-sentinel_local_only}@postgres:5432/${POSTGRES_DB:-sentinel}
       REDIS_URL: redis://:${REDIS_PASSWORD:-sentinel_local_only}@redis:6379/0
       READINESS_TIMEOUT_SECONDS: ${READINESS_TIMEOUT_SECONDS:-2}
+      RESULT_API_TOKEN: ${RESULT_API_TOKEN:-}
+      SCORING_RUN_ID: ${SCORING_RUN_ID:-}
+      REVIEW_API_TOKEN: ${REVIEW_API_TOKEN:-}
+      REVIEWER_ID: ${REVIEWER_ID:-}
     ports:
       - "127.0.0.1:${API_PORT:-18000}:8000"
     depends_on:
@@ -59,6 +69,7 @@ services:
     restart: unless-stopped
 
   publisher:
+    logging: *runtime-logging
     image: sentinel-ai-api:task4
     command: ["node", "src/stream/publisher.js"]
     environment: &worker-environment
@@ -106,6 +117,37 @@ services:
       retries: 12
       start_period: 5s
     restart: unless-stopped
+
+  scoring-worker:
+    logging: *runtime-logging
+    profiles: [scoring]
+    image: sentinel-ai-scoring-worker:task6
+    build:
+      context: ../services/ml
+    command:
+      - --bundle
+      - /model
+      - --bundle-sha256
+      - ${SCORING_BUNDLE_SHA256:-unset}
+      - --run-id
+      - ${SCORING_RUN_ID:-unset}
+      - --gate-report
+      - /gates/report.json
+      - --gate-report-sha256
+      - ${SCORING_GATE_REPORT_SHA256:-unset}
+    environment:
+      POSTGRES_URL: postgresql://${POSTGRES_USER:-sentinel}:${POSTGRES_PASSWORD:-sentinel_local_only}@postgres:5432/${POSTGRES_DB:-sentinel}
+      REDIS_URL: redis://:${REDIS_PASSWORD:-sentinel_local_only}@redis:6379/0
+      SCORING_STREAM: ${STREAM_NAME:-authorization.events.v1}
+    volumes:
+      - ${SCORING_BUNDLE_DIR:-../services/ml/artifacts/frozen/random-forest/20261002T075558874195Z}:/model:ro
+      - ${SCORING_GATE_DIR:-../services/ml/reports/final-test}:/gates:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: on-failure:3
 
 volumes:
   postgres_data:

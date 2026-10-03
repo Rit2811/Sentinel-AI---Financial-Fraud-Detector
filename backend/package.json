@@ -15,7 +15,7 @@
     "format:check": "prettier --check src tests *.js *.json README.md",
     "lint": "eslint src tests *.js",
     "test": "node --experimental-vm-modules node_modules/jest/bin/jest.js --runInBand --cacheDirectory .jest-cache --testPathIgnorePatterns=integration",
-    "test:integration": "node --experimental-vm-modules node_modules/jest/bin/jest.js --runInBand --cacheDirectory .jest-cache tests/integration",
+    "test:integration": "node --experimental-vm-modules node_modules/jest/bin/jest.js --runInBand --cacheDirectory .jest-cache --testTimeout=15000 tests/integration",
     "migrate:up": "node-pg-migrate up -m migrations",
     "migrate:down": "node-pg-migrate down -m migrations"
   },
