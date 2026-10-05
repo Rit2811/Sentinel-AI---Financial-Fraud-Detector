@@ -1,12 +1,19 @@
 import pytest
 
 from fraud_ml.connected_benchmark import (
+    paced_due,
     generated_event,
     guard_application_urls,
     latency_summary,
     main,
 )
 from fraud_ml.features import FeatureStream
+
+
+def test_pacing_never_catches_up_after_a_slow_slot():
+    assert paced_due(100, 0, 5, None) == 100
+    assert paced_due(100, 1, 5, 100) == 100.2
+    assert paced_due(100, 2, 5, 101) == 101.2
 
 
 def test_docker_workload_uses_only_the_shared_label_free_contract():

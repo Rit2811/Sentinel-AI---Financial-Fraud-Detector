@@ -1,4 +1,6 @@
 import { randomUUID } from 'node:crypto'
+import { fork } from 'node:child_process'
+import { once } from 'node:events'
 
 import pg from 'pg'
 import { createClient } from 'redis'
@@ -227,4 +229,280 @@ test('publisher retries a failed send and reclaims a lost publishing claim', asy
   expect(await publishOutboxBatch(context)).toBe(1)
   expect(await consumeOnce(context)).toBe(1)
   expect(await receipt(event.event_id)).toBeDefined()
+})
+
+async function queuedEvents(count) {
+  const events = Array.from({ length: count }, (_, i) =>
+    sparkovReplay({
+      event_id: randomUUID(),
+      authorization_id: randomUUID(),
+      occurred_at: `2019-01-01T00:00:${String(i).padStart(2, '0')}Z`,
+    }),
+  )
+  for (const event of events) await ingest(event)
+  return events
+}
+
+async function publishedIds() {
+  return (await redis.xRange(streamConfig.name, '-', '+')).map(
+    ({ message }) => JSON.parse(message.envelope).event_id,
+  )
+}
+
+test('concurrent publishers cannot overtake the locked predecessor; batch is bounded to four', async () => {
+  const events = await queuedEvents(5)
+  let unblock
+  let signal
+  const blocked = new Promise((resolve) => {
+    unblock = resolve
+  })
+  const entered = new Promise((resolve) => {
+    signal = resolve
+  })
+  let first = true
+  const slow = {
+    xAdd: async (...args) => {
+      if (first) {
+        first = false
+        signal()
+        await blocked
+      }
+      return redis.xAdd(...args)
+    },
+  }
+  const publication = publishOutboxBatch({ ...context, redis: slow })
+  await entered
+  try {
+    expect(await publishOutboxBatch(context)).toBe(0)
+  } finally {
+    unblock()
+  }
+  expect(await publication).toBe(4)
+  expect(await publishOutboxBatch(context)).toBe(1)
+  expect(await publishedIds()).toEqual(events.map((e) => e.event_id))
+})
+
+test('failure after a successful prefix rolls back the whole batch and preserves retry order', async () => {
+  const events = await queuedEvents(3)
+  let sends = 0
+  await publishOutboxBatch({
+    ...context,
+    redis: {
+      xAdd: async (...args) => {
+        if (++sends === 2) throw new Error('redis_unavailable')
+        return redis.xAdd(...args)
+      },
+    },
+  })
+  expect(
+    (
+      await pool.query('SELECT status FROM authorization_event_outbox')
+    ).rows.every((r) => r.status === 'pending'),
+  ).toBe(true)
+  // The deferred predecessor prevents a later event from overtaking it.
+  expect(await publishOutboxBatch(context)).toBe(1)
+  expect(await publishOutboxBatch(context)).toBe(0)
+  await pool.query(
+    `UPDATE authorization_event_outbox SET available_at=clock_timestamp()`,
+  )
+  expect(await publishOutboxBatch(context)).toBe(2)
+  expect(await publishedIds()).toEqual([
+    events[0].event_id,
+    ...events.map((e) => e.event_id),
+  ])
+  expect(await consumeOnce(context)).toBe(4)
+  expect(
+    (
+      await pool.query(
+        'SELECT count(*)::int AS n FROM stream_processing_receipts',
+      )
+    ).rows[0].n,
+  ).toBe(3)
+})
+
+test('accepted but uncertain Redis publication is retried with the identical canonical ID', async () => {
+  const [event] = await queuedEvents(1)
+  await publishOutboxBatch({
+    ...context,
+    redis: {
+      xAdd: async (...args) => {
+        await redis.xAdd(...args)
+        throw new Error('reply_lost_after_acceptance')
+      },
+    },
+  })
+  expect(
+    (await pool.query('SELECT status FROM authorization_event_outbox')).rows[0]
+      .status,
+  ).toBe('pending')
+  await pool.query(
+    `UPDATE authorization_event_outbox SET available_at=clock_timestamp()`,
+  )
+  await publishOutboxBatch(context)
+  expect(await publishedIds()).toEqual([event.event_id, event.event_id])
+  await consumeOnce(context)
+  expect(
+    (
+      await pool.query(
+        'SELECT count(*)::int AS n FROM stream_processing_receipts',
+      )
+    ).rows[0].n,
+  ).toBe(1)
+})
+
+test('uncertain database COMMIT never regresses published rows', async () => {
+  const [event] = await queuedEvents(1)
+  const wrapper = {
+    connect: async () => {
+      const client = await pool.connect()
+      return {
+        release: (...args) => client.release(...args),
+        query: async (...args) => {
+          const result = await client.query(...args)
+          if (args[0] === 'COMMIT') throw new Error('commit_ack_lost')
+          return result
+        },
+      }
+    },
+  }
+  await expect(
+    publishOutboxBatch({ ...context, pool: wrapper }),
+  ).rejects.toThrow('commit_ack_lost')
+  expect(
+    (await pool.query('SELECT status FROM authorization_event_outbox')).rows[0]
+      .status,
+  ).toBe('published')
+  expect(await publishOutboxBatch(context)).toBe(0)
+  expect(await publishedIds()).toEqual([event.event_id])
+})
+
+test('a stalled Redis command releases locks and leaves a durable retry state', async () => {
+  await queuedEvents(1)
+  const start = performance.now()
+  await publishOutboxBatch({
+    ...context,
+    redis: { xAdd: () => new Promise(() => {}) },
+  })
+  expect(performance.now() - start).toBeLessThan(1500)
+  expect(
+    (
+      await pool.query(
+        'SELECT status,attempt_count FROM authorization_event_outbox',
+      )
+    ).rows[0],
+  ).toEqual({ status: 'pending', attempt_count: 1 })
+  const peer = await pool.connect()
+  try {
+    await peer.query('BEGIN')
+    expect(
+      (await peer.query('SELECT pg_try_advisory_xact_lock(1706,1) AS acquired'))
+        .rows[0].acquired,
+    ).toBe(true)
+    await peer.query('ROLLBACK')
+  } finally {
+    peer.release()
+  }
+})
+
+test('native Redis timeout closes the connection, rolls back, then reconnects and recovers', async () => {
+  const [event] = await queuedEvents(1)
+  const bounded = createClient({
+    url: requireTestRedisUrl(process.env.TEST_REDIS_URL),
+    disableOfflineQueue: true,
+    socket: { connectTimeout: 1000, reconnectStrategy: false },
+  })
+  bounded.on('error', () => {})
+  await bounded.connect()
+  try {
+    await redis.sendCommand(['CLIENT', 'PAUSE', '250', 'ALL'])
+    await publishOutboxBatch({ ...context, redis: bounded })
+    expect(bounded.isOpen).toBe(false)
+    expect(
+      (await pool.query('SELECT status FROM authorization_event_outbox'))
+        .rows[0].status,
+    ).toBe('pending')
+    await bounded.connect()
+    await pool.query(
+      `UPDATE authorization_event_outbox SET available_at=clock_timestamp()`,
+    )
+    expect(await publishOutboxBatch({ ...context, redis: bounded })).toBe(1)
+    expect(await publishedIds()).toEqual([event.event_id])
+  } finally {
+    if (bounded.isOpen) bounded.destroy()
+  }
+})
+
+test('single publication can use the existing batch budget without premature cancellation', async () => {
+  const [event] = await queuedEvents(1)
+  const delayed = {
+    get isOpen() {
+      return redis.isOpen
+    },
+    destroy() {
+      redis.destroy()
+    },
+    async xAdd(...args) {
+      await new Promise((resolve) => setTimeout(resolve, 130))
+      return redis.xAdd(...args)
+    },
+  }
+  expect(await publishOutboxBatch({ ...context, redis: delayed })).toBe(1)
+  expect(await publishedIds()).toEqual([event.event_id])
+  expect(
+    (
+      await pool.query(
+        'SELECT status,attempt_count FROM authorization_event_outbox',
+      )
+    ).rows[0],
+  ).toEqual({ status: 'published', attempt_count: 1 })
+})
+
+test('real publisher death after Redis accepts and before COMMIT recovers the complete batch', async () => {
+  const events = await queuedEvents(3)
+  const child = fork(
+    new URL('../publisherCrashChild.js', import.meta.url),
+    [],
+    {
+      env: {
+        ...process.env,
+        CRASH_STREAM_CONFIG: JSON.stringify(streamConfig),
+      },
+      stdio: ['ignore', 'ignore', 'pipe', 'ipc'],
+    },
+  )
+  let stderr = ''
+  child.stderr.on('data', (chunk) => {
+    stderr += chunk
+  })
+  const exited = once(child, 'exit')
+  try {
+    const boundary = await Promise.race([
+      once(child, 'message').then(([message]) => message),
+      exited.then(() => {
+        throw new Error(`Child exited early: ${stderr}`)
+      }),
+    ])
+    expect(boundary).toBe('before_commit')
+    expect(await publishedIds()).toEqual(events.map((e) => e.event_id))
+    expect(
+      (
+        await pool.query('SELECT status FROM authorization_event_outbox')
+      ).rows.every((r) => r.status === 'pending'),
+    ).toBe(true)
+  } finally {
+    child.kill('SIGKILL')
+    await exited
+  }
+  expect(await publishOutboxBatch(context)).toBe(3)
+  expect(await publishedIds()).toEqual(
+    [...events, ...events].map((e) => e.event_id),
+  )
+  await consumeOnce(context)
+  expect(
+    (
+      await pool.query(
+        'SELECT count(*)::int AS n FROM stream_processing_receipts',
+      )
+    ).rows[0].n,
+  ).toBe(3)
 })

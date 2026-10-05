@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto'
+import { performance } from 'node:perf_hooks'
 
 import {
   claimIdempotency,
@@ -50,7 +51,26 @@ export function createAuthorizationIngestionService(pool, log) {
       const keyHash = sha256(idempotencyKey)
       const payloadHash = sha256(canonicalize(event))
       const receivedAt = new Date().toISOString()
-      const client = await pool.connect().catch((error) => {
+      const records = []
+      const measure = async (stage, operation) => {
+        if (process.env.INGESTION_PROFILE !== '1') return operation()
+        const tick = performance.now()
+        const waiting = pool.waitingCount ?? null
+        try {
+          return await operation()
+        } finally {
+          records.push({
+            kind: 'stage_timing',
+            stage,
+            event_id: event.event_id,
+            elapsed_ms: performance.now() - tick,
+            pool_waiting_count: waiting,
+          })
+        }
+      }
+      const client = await measure('ingestion_pool_wait', () =>
+        pool.connect(),
+      ).catch((error) => {
         log.error(
           { errorType: error.name },
           'PostgreSQL connection unavailable',
@@ -59,8 +79,10 @@ export function createAuthorizationIngestionService(pool, log) {
       })
 
       try {
-        await client.query('BEGIN')
-        const claimed = await claimIdempotency(client, keyHash, payloadHash)
+        await measure('ingestion_begin', () => client.query('BEGIN'))
+        const claimed = await measure('ingestion_idempotency', () =>
+          claimIdempotency(client, keyHash, payloadHash),
+        )
         if (!claimed) {
           const record = await getIdempotencyRecord(client, keyHash)
           if (!record || record.status !== 'completed')
@@ -110,19 +132,21 @@ export function createAuthorizationIngestionService(pool, log) {
             reasonCodes: [],
             receivedAt,
           })
-          await persistAcceptedAuthorization(
-            client,
-            event,
-            {
-              ingestionId,
-              correlationId,
-              keyHash,
-              payloadHash,
-              receivedAt,
-            },
-            body,
+          await measure('ingestion_event_audit_statement', () =>
+            persistAcceptedAuthorization(
+              client,
+              event,
+              {
+                ingestionId,
+                correlationId,
+                keyHash,
+                payloadHash,
+                receivedAt,
+              },
+              body,
+            ),
           )
-          await client.query('COMMIT')
+          await measure('ingestion_commit_ack', () => client.query('COMMIT'))
           return { status: 202, body }
         }
         if (quarantined) {
@@ -170,6 +194,13 @@ export function createAuthorizationIngestionService(pool, log) {
         throw new DependencyUnavailableError()
       } finally {
         client.release()
+        if (records.length)
+          setImmediate(() =>
+            log.info(
+              { kind: 'stage_profile_batch', records },
+              'Ingestion stage timings',
+            ),
+          )
       }
     },
   }

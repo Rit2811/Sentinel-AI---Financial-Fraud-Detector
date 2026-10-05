@@ -25,7 +25,11 @@ export async function claimOutboxBatch(pool, options) {
                  outbox.attempt_count`,
       [options.batchSize, options.workerId],
     )
-    await client.query('COMMIT')
+    if (options.profile)
+      await options.profile.measure('publisher_claim_commit_ack', null, () =>
+        client.query('COMMIT'),
+      )
+    else await client.query('COMMIT')
     return result.rows
   } catch (error) {
     await client.query('ROLLBACK').catch(() => {})
@@ -44,6 +48,75 @@ export async function markOutboxPublished(pool, outboxId, messageId) {
      WHERE outbox_id = $1`,
     [outboxId, messageId],
   )
+}
+
+export async function lockPublicationBatch(client, options) {
+  // One transaction-scoped fence prevents concurrent publishers skipping a
+  // locked predecessor and reversing publication order. No wait to fill a batch.
+  const fence = await client.query(
+    'SELECT pg_try_advisory_xact_lock(1706, 1) AS acquired',
+  )
+  if (!fence.rows[0].acquired) return []
+  const result = await client.query(
+    `SELECT o.outbox_id, o.event_id, o.envelope, o.attempt_count,
+            o.status, o.available_at <= clock_timestamp() AS available,
+            o.claimed_at < clock_timestamp() - ($2::int * interval '1 millisecond') AS abandoned
+     FROM authorization_event_outbox o JOIN authorization_events e USING(event_id)
+     WHERE o.status IN ('pending','publishing')
+     ORDER BY e.created_at, e.event_id
+     LIMIT $1 FOR UPDATE OF o`,
+    [Math.max(1, Math.min(options.batchSize, 4)), options.claimIdleMs],
+  )
+  const rows = []
+  for (const row of result.rows) {
+    if (!row.available || (row.status === 'publishing' && !row.abandoned)) break
+    rows.push(row)
+  }
+  return rows
+}
+
+export async function completePublication(client, row, messageId) {
+  await client.query(
+    `UPDATE authorization_event_outbox
+     SET status='published', attempt_count=attempt_count+1,
+         published_at=clock_timestamp(), stream_message_id=$2,
+         claimed_at=NULL, claimed_by=NULL, last_error_code=NULL,
+         updated_at=clock_timestamp() WHERE outbox_id=$1`,
+    [row.outbox_id, messageId],
+  )
+}
+
+export async function recordPublicationFailure(
+  pool,
+  row,
+  maxAttempts,
+  errorCode,
+) {
+  // After rollback, compare-and-set cannot undo another publisher's successful
+  // commit. A lost failure record still leaves the original event retryable.
+  const client = await pool.connect()
+  try {
+    await client.query('BEGIN')
+    await client.query(
+      `SET LOCAL synchronous_commit=on; SET LOCAL lock_timeout='100ms'; SET LOCAL statement_timeout='500ms'`,
+    )
+    await client.query(
+      `UPDATE authorization_event_outbox
+       SET attempt_count=attempt_count+1,
+           status=CASE WHEN attempt_count+1 >= $3 THEN 'dead_letter' ELSE 'pending' END,
+           available_at=clock_timestamp()+interval '2 seconds',
+           claimed_at=NULL, claimed_by=NULL, last_error_code=$4,
+           updated_at=clock_timestamp()
+       WHERE outbox_id=$1 AND attempt_count=$2 AND status IN ('pending','publishing')`,
+      [row.outbox_id, row.attempt_count, maxAttempts, errorCode],
+    )
+    await client.query('COMMIT')
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => {})
+    throw error
+  } finally {
+    client.release()
+  }
 }
 
 export async function markOutboxFailure(pool, options) {

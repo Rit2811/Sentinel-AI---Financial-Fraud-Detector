@@ -6,7 +6,7 @@ import { logger } from '../logger.js'
 import { createRedisClient } from './redis.js'
 import { publishOutboxBatch } from './publisherWorker.js'
 
-const redis = createRedisClient()
+const redis = createRedisClient({ bounded: true })
 let stopping = false
 for (const signal of ['SIGINT', 'SIGTERM']) {
   process.on(signal, () => {
@@ -14,10 +14,16 @@ for (const signal of ['SIGINT', 'SIGTERM']) {
   })
 }
 
-await redis.connect()
+const settings = await pool.query(`SELECT current_setting('fsync') AS fsync`)
+if (settings.rows[0].fsync !== 'on')
+  throw new Error('durable_publication_requires_fsync')
 logger.info({ stream: config.stream.name }, 'Outbox publisher started')
 while (!stopping) {
   try {
+    if (!redis.isReady) {
+      if (redis.isOpen) redis.destroy()
+      await redis.connect()
+    }
     const count = await publishOutboxBatch({
       pool,
       redis,

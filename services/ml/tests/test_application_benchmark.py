@@ -12,6 +12,29 @@ def test_application_workload_rejects_unbounded_duration(seconds):
         benchmark.main(["--tps", "5", "--seconds", seconds])
 
 
+def test_unqualified_diagnostic_cannot_run_full_gate():
+    with pytest.raises(SystemExit):
+        benchmark.main(["--tps", "5", "--seconds", "600", "--diagnostic"])
+
+
+def test_qualification_requires_explicit_one_second_candidate():
+    with pytest.raises(SystemExit):
+        benchmark.main(["--tps", "5", "--seconds", "600", "--qualification"])
+
+
+@pytest.mark.parametrize(
+    "options",
+    [
+        ["--diagnostic-deadline-ms", "2000"],
+        ["--trial-run-id", "afba0a1e-7d4c-4df0-834f-33ecf9a7c7d3"],
+        ["--diagnostic-deadline-ms", "3000"],
+    ],
+)
+def test_deadline_trial_requires_explicit_bounded_configuration(options):
+    with pytest.raises(SystemExit):
+        benchmark.main(["--tps", "5", "--seconds", "600", *options])
+
+
 @pytest.mark.parametrize("wrong", ["image", "network", "volume"])
 def test_application_client_rejects_wrong_deployment_before_start(
     tmp_path, monkeypatch, wrong

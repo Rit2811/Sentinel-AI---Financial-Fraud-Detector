@@ -7,7 +7,7 @@ import hashlib
 import json
 import os
 import time
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from datetime import UTC, datetime
 from pathlib import Path
 from urllib.parse import urlparse
@@ -27,6 +27,12 @@ from .features import (
 from .serving import FrozenScorer, sha256
 
 TERMINAL = {"scored", "expired", "failed"}
+
+
+class InferenceFailure(Exception):
+    """Retry an uncommitted first assignment through the existing failure path."""
+
+
 ENVELOPE_FIELDS = {
     "event_id",
     "authorization_id",
@@ -144,15 +150,21 @@ class ScoringWorker:
         stream,
         gate_report_pin=None,
         max_attempts=3,
+        diagnostic_deadline_ms=None,
     ):
         self.db, self.redis, self.scorer = connection, transport, scorer
         self.run_id, self.package_pin = str(UUID(run_id)), package_pin
         self.mode, self.stream = mode, stream
         self.group = f"sentinel-scoring:{self.run_id}"
         self.max_attempts = max_attempts
+        if diagnostic_deadline_ms not in (None, 2000):
+            raise ValueError("Only the authorized two-second diagnostic is supported")
+        self.diagnostic_only = diagnostic_deadline_ms is not None
+        self.deadline_ms = diagnostic_deadline_ms or 1000
         self.owns_lock = False
         self.claim_cursor = "0-0"
         self._ready_heartbeat_at = 0.0
+        self._stream_reconciled = False
         self._profile_records = []
         if mode not in ("fixture", "application") or max_attempts < 1:
             raise ValueError("Invalid worker configuration")
@@ -179,8 +191,8 @@ class ScoringWorker:
         self.db.execute("SET synchronous_commit=on")
         with self.db.transaction():
             self.db.execute(
-                """INSERT INTO scoring_runs (run_id,mode,bundle_sha256,policy_version,feature_version,gate_report_sha256,deadline_ms,durability_contract)
-              VALUES (%s,%s,%s,%s,%s,%s,1000,'postcommit-v1') ON CONFLICT DO NOTHING""",
+                """INSERT INTO scoring_runs (run_id,mode,bundle_sha256,policy_version,feature_version,gate_report_sha256,deadline_ms,durability_contract,diagnostic_only)
+              VALUES (%s,%s,%s,%s,%s,%s,%s,'postcommit-v1',%s) ON CONFLICT DO NOTHING""",
                 (
                     self.run_id,
                     mode,
@@ -188,6 +200,8 @@ class ScoringWorker:
                     scorer.policy["policy_version"],
                     FEATURE_VERSION,
                     gate_report_pin,
+                    self.deadline_ms,
+                    self.diagnostic_only,
                 ),
             )
             run = self.db.execute(
@@ -199,6 +213,8 @@ class ScoringWorker:
                 or run["mode"] != mode
                 or run["gate_report_sha256"] != gate_report_pin
                 or run["durability_contract"] != "postcommit-v1"
+                or run["deadline_ms"] != self.deadline_ms
+                or run["diagnostic_only"] != self.diagnostic_only
             ):
                 raise ValueError("Assigned run identity cannot change on restart")
             self.db.execute(
@@ -213,6 +229,7 @@ class ScoringWorker:
     def ensure_group(self):
         try:
             self.redis.xgroup_create(self.stream, self.group, "0", mkstream=True)
+            self._stream_reconciled = False
         except redis.ResponseError as error:
             if "BUSYGROUP" not in str(error):
                 raise
@@ -229,6 +246,17 @@ class ScoringWorker:
     def ready_heartbeat(self):
         if time.monotonic() - self._ready_heartbeat_at < 1:
             return
+        if not self._stream_reconciled:
+            group = next(
+                g
+                for g in self.redis.xinfo_groups(self.stream)
+                if g["name"] == self.group
+            )
+            if group["lag"] or group["pending"]:
+                self.health(False, "stream_reconciling")
+                self._ready_heartbeat_at = time.monotonic()
+                return
+            self._stream_reconciled = True
         blocked = self.db.execute(
             "SELECT blocked FROM scoring_worker_health WHERE run_id=%s", (self.run_id,)
         ).fetchone()["blocked"]
@@ -321,22 +349,27 @@ class ScoringWorker:
                 flush=True,
             )
 
-    def assign(self, row):
+    def assign(self, row, *, prepare=False, transaction_open=False):
         queue_ms = (datetime.now(UTC) - row["accepted_at"]).total_seconds() * 1000
         with self.profile_stage(
-            "assignment_commit_ack", row["event_id"], queue_ms=queue_ms
+            "assignment_statement" if transaction_open else "assignment_commit_ack",
+            row["event_id"],
+            queue_ms=queue_ms,
         ):
-            return self._assign(row)
+            return self._assign(row, prepare=prepare, transaction_open=transaction_open)
 
-    def _assign(self, row):
+    def _assign(self, row, *, prepare=False, transaction_open=False):
         event = row["sanitized_payload"]
         moment = validate_event(event)
         event_id = event["event_id"]
-        with self.db.pipeline(), self.db.transaction():
+        with (
+            self.db.pipeline(),
+            nullcontext() if transaction_open else self.db.transaction(),
+        ):
             inserted = self.db.execute(
                 """INSERT INTO scoring_jobs (run_id,event_id,correlation_id,bundle_sha256,
               model_version,policy_version,feature_version,created_at,deadline_at)
-              VALUES (%s,%s,%s,%s,'random_forest.sigmoid',%s,%s,%s,%s + interval '1 second')
+              VALUES (%s,%s,%s,%s,'random_forest.sigmoid',%s,%s,%s,%s + %s * interval '1 millisecond')
               ON CONFLICT DO NOTHING RETURNING event_id""",
                 (
                     self.run_id,
@@ -347,10 +380,11 @@ class ScoringWorker:
                     FEATURE_VERSION,
                     row["accepted_at"],
                     row["accepted_at"],
+                    self.deadline_ms,
                 ),
             ).fetchone()
             if not inserted:
-                return True
+                return None if prepare else True
             with self.profile_stage("history_read", event_id):
                 latest = self.db.execute(
                     """SELECT max(occurred_at) AS moment,count(*) AS n,
@@ -388,9 +422,39 @@ class ScoringWorker:
                     event["amount_minor"],
                 ),
             )
-        return True
+            if prepare:
+                publication = row["publication_status"]
+                if publication == "dead_letter":
+                    self.finish_failure(event_id, "failed", "publication_failed")
+                    return None
+                if publication != "published":
+                    self.db.execute(
+                        """UPDATE scoring_jobs SET status='expired',error_code='deadline_expired',
+                        retryable=false,updated_at=clock_timestamp() WHERE run_id=%s AND event_id=%s
+                        AND clock_timestamp()>=deadline_at""",
+                        (self.run_id, event_id),
+                    )
+                    return None
+                prepared = self.db.execute(
+                    """UPDATE scoring_jobs SET status='scoring',attempts=1,
+                        updated_at=clock_timestamp()
+                    WHERE run_id=%s AND event_id=%s AND clock_timestamp()<deadline_at
+                    RETURNING *,clock_timestamp() AS inference_start_clock""",
+                    (self.run_id, event_id),
+                ).fetchone()
+                if not prepared:
+                    self.finish_failure(event_id, "expired", "deadline_expired")
+                    return None
+                prepared.update(features)
+                prepared["feature_sha256"] = digest(features)
+        # Returning from the transaction context waits for synchronous COMMIT.
+        return prepared if prepare else True
 
     def finish_failure(self, event_id, status, code):
+        with self.profile_stage("terminal_failure_storage", event_id, status=status):
+            return self._finish_failure(event_id, status, code)
+
+    def _finish_failure(self, event_id, status, code):
         self.db.execute(
             """UPDATE scoring_jobs SET status=%s,error_code=%s,retryable=false,
           next_attempt_at=NULL,updated_at=clock_timestamp() WHERE run_id=%s AND event_id=%s
@@ -456,11 +520,18 @@ class ScoringWorker:
         rows = [
             row for event_id in event_ids if (row := self.prepare_pending(event_id))
         ]
+        self.score_prepared(rows)
+
+    def score_prepared(self, rows):
         if not rows:
             return
         tick = time.perf_counter()
         try:
-            with self.profile_stage("inference", batch_size=len(rows)):
+            with self.profile_stage(
+                "inference",
+                batch_size=len(rows),
+                event_ids=[str(row["event_id"]) for row in rows],
+            ):
                 probabilities, actions = self.scorer.score(
                     [{name: row[name] for name in FEATURE_ORDER} for row in rows]
                 )
@@ -485,20 +556,160 @@ class ScoringWorker:
                         )
             return
         elapsed = (time.perf_counter() - tick) * 1000
-        for row, probability, action in zip(rows, probabilities, actions, strict=True):
+        predictions = list(zip(rows, probabilities, actions, strict=True))
+        if len(rows) == 1:
+            row, probability, action = predictions[0]
             self.persist_prediction(row, float(probability), str(action), elapsed)
+            return
+        staged = []
+        try:
+            with (
+                self.profile_stage(
+                    "prediction_batch_commit_ack",
+                    batch_size=len(rows),
+                    event_ids=[str(row["event_id"]) for row in rows],
+                ),
+                self.db.transaction(),
+            ):
+                for row, probability, action in predictions:
+                    if self._persist_prediction(
+                        row,
+                        float(probability),
+                        str(action),
+                        elapsed,
+                        defer_finalization=True,
+                    ):
+                        staged.append(row["event_id"])
+        except psycopg.errors.RaiseException:
+            # A boundary crossed during staging rolls back every private prediction.
+            # Retry storage individually with fresh database-clock deadline checks.
+            for row, probability, action in predictions:
+                self.persist_prediction(row, float(probability), str(action), elapsed)
+            return
+        # All private predictions are committed before any execution is attempted.
+        try:
+            with (
+                self.profile_stage(
+                    "execution_batch_commit_ack",
+                    batch_size=len(staged),
+                    event_ids=[str(event_id) for event_id in staged],
+                ),
+                self.db.transaction(),
+            ):
+                self.finalize_batch(staged)
+        except psycopg.errors.RaiseException:
+            # A deferred deadline guard rolls the whole execution batch back.
+            # Recheck each deadline independently; a timely peer must not be lost.
+            for event_id in staged:
+                self.finalize_prediction(event_id)
+
+    def score_new_batch(self, batch):
+        prepared, staged = [], []
+        stopped = False
+        try:
+            with (
+                self.profile_stage(
+                    "checkpoint_prediction_commit_ack",
+                    batch_size=len(batch),
+                    event_ids=[str(row["event_id"]) for row in batch],
+                ),
+                self.db.transaction(),
+            ):
+                for row in batch:
+                    ready = self.assign(row, prepare=True, transaction_open=True)
+                    if ready is False:
+                        stopped = True
+                        break
+                    if ready is not None:
+                        prepared.append(ready)
+                if prepared:
+                    tick = time.perf_counter()
+                    try:
+                        with self.profile_stage(
+                            "inference",
+                            batch_size=len(prepared),
+                            event_ids=[str(row["event_id"]) for row in prepared],
+                        ):
+                            probabilities, actions = self.scorer.score(
+                                [
+                                    {name: row[name] for name in FEATURE_ORDER}
+                                    for row in prepared
+                                ]
+                            )
+                    except Exception as error:
+                        raise InferenceFailure from error
+                    elapsed = (time.perf_counter() - tick) * 1000
+                    for row, probability, action in zip(
+                        prepared, probabilities, actions, strict=True
+                    ):
+                        if self._persist_prediction(
+                            row,
+                            float(probability),
+                            str(action),
+                            elapsed,
+                            defer_finalization=True,
+                            transaction_open=True,
+                        ):
+                            staged.append(row["event_id"])
+        except InferenceFailure:
+            # No checkpoint survived. The existing retry path records a durable
+            # unavailable/failed state without losing this accepted attempt.
+            prepared = []
+            for row in batch:
+                ready = self.assign(row, prepare=True)
+                if ready is False:
+                    stopped = True
+                    break
+                if ready is not None:
+                    prepared.append(ready)
+            self.score_prepared(prepared)
+            return stopped
+        # Acknowledged synchronous COMMIT above precedes every public effect.
+        if len(staged) == 1:
+            self.finalize_prediction(staged[0])
+        elif staged:
+            try:
+                with (
+                    self.profile_stage(
+                        "execution_batch_commit_ack",
+                        batch_size=len(staged),
+                        event_ids=[str(event_id) for event_id in staged],
+                    ),
+                    self.db.transaction(),
+                ):
+                    self.finalize_batch(staged)
+            except psycopg.errors.RaiseException:
+                for event_id in staged:
+                    self.finalize_prediction(event_id)
+        return stopped
 
     def persist_prediction(self, row, probability, action, elapsed):
         with self.profile_stage("result_commit_ack", row["event_id"]):
             return self._persist_prediction(row, probability, action, elapsed)
 
-    def _persist_prediction(self, row, probability, action, elapsed):
+    def _persist_prediction(
+        self,
+        row,
+        probability,
+        action,
+        elapsed,
+        *,
+        defer_finalization=False,
+        transaction_open=False,
+    ):
         event_id, started = row["event_id"], row["inference_start_clock"]
         try:
             with (
-                self.profile_stage("prediction_commit_ack", event_id),
+                self.profile_stage(
+                    "prediction_statement"
+                    if transaction_open
+                    else "prediction_commit_ack",
+                    event_id,
+                ),
                 self.db.pipeline(),
-                self.db.transaction(),
+                nullcontext()
+                if transaction_open or defer_finalization
+                else self.db.transaction(),
             ):
                 state = self.db.execute(
                     "SELECT *,clock_timestamp() >= deadline_at AS expired FROM scoring_jobs WHERE run_id=%s AND event_id=%s FOR UPDATE",
@@ -530,8 +741,12 @@ class ScoringWorker:
                 )
             # No effect exists yet. Only an acknowledged synchronous COMMIT permits
             # finalization; recovery reuses this immutable prediction without inference.
+            if defer_finalization or transaction_open:
+                return True
             self.finalize_prediction(event_id)
         except psycopg.errors.RaiseException:
+            if defer_finalization or transaction_open:
+                raise
             # Deferred deadline validation may reject COMMIT. Never acknowledge it as success.
             state = self.db.execute(
                 "SELECT clock_timestamp() >= deadline_at AS expired FROM scoring_jobs WHERE run_id=%s AND event_id=%s",
@@ -578,6 +793,35 @@ class ScoringWorker:
                 (self.run_id, event_id),
             )
 
+    def finalize_batch(self, event_ids):
+        if not event_ids:
+            return
+        # RETURNING dependencies keep result insertion before completion updates.
+        self.db.execute(
+            """WITH locked AS MATERIALIZED (
+                SELECT j.*,clock_timestamp()>=j.deadline_at AS expired
+                FROM scoring_jobs j WHERE j.run_id=%s AND j.event_id=ANY(%s::uuid[])
+                  AND j.status NOT IN ('scored','expired','failed')
+                ORDER BY j.created_at,j.event_id FOR UPDATE OF j
+            ), expired_jobs AS (
+                UPDATE scoring_jobs j SET status='expired',error_code='deadline_expired',
+                  retryable=false,next_attempt_at=NULL,updated_at=clock_timestamp()
+                FROM locked l WHERE j.run_id=l.run_id AND j.event_id=l.event_id
+                  AND l.expired RETURNING j.event_id
+            ), results AS (
+                INSERT INTO scoring_results
+                SELECT p.run_id,p.event_id,p.probability,p.action,p.review_threshold,
+                  p.block_threshold,p.reason_code,p.inference_started_at,
+                  p.inference_finished_at,p.inference_ms,clock_timestamp()
+                FROM locked l JOIN scoring_predictions p USING(run_id,event_id)
+                WHERE NOT l.expired RETURNING run_id,event_id
+            )
+            UPDATE scoring_jobs j SET status='scored',retryable=false,error_code=NULL,
+              next_attempt_at=NULL,updated_at=clock_timestamp()
+            FROM results r WHERE j.run_id=r.run_id AND j.event_id=r.event_id""",
+            (self.run_id, event_ids),
+        )
+
     def drain(self, limit=50):
         if self.db.execute(
             "SELECT blocked FROM scoring_worker_health WHERE run_id=%s", (self.run_id,)
@@ -587,25 +831,37 @@ class ScoringWorker:
         # Both event IDs are non-null primary keys; NOT IN permits a hashed lookup
         # instead of repeatedly probing every previously assigned event's index.
         rows = self.db.execute(
-            """SELECT e.*,o.envelope,o.status AS publication_status,coalesce(a.received_at,e.created_at) AS accepted_at
-          FROM authorization_events e JOIN authorization_event_outbox o USING(event_id)
+            """WITH candidates AS MATERIALIZED (
+              SELECT event_id,created_at FROM authorization_events
+              WHERE schema_version='2.0' AND created_at >= %s
+                AND event_id NOT IN (SELECT event_id FROM scoring_jobs WHERE run_id=%s)
+              ORDER BY created_at,event_id LIMIT %s
+          ) SELECT e.*,o.envelope,o.status AS publication_status,coalesce(a.received_at,e.created_at) AS accepted_at
+          FROM candidates c JOIN authorization_events e USING(event_id)
+          JOIN authorization_event_outbox o USING(event_id)
           LEFT JOIN LATERAL (SELECT min(received_at) AS received_at FROM ingestion_attempts
              WHERE event_id=e.event_id AND outcome='accepted') a ON true
-          WHERE e.schema_version='2.0' AND e.created_at >= %s
-          AND e.event_id NOT IN (SELECT event_id FROM scoring_jobs WHERE run_id=%s)
-          ORDER BY e.created_at,e.event_id LIMIT %s""",
+          ORDER BY c.created_at,c.event_id""",
             (self.started_at, self.run_id, limit),
         ).fetchall()
+        # Wait for the publisher's durable outcome before creating a checkpoint.
+        # Acceptance remains in PostgreSQL. Stop at the first unready predecessor
+        # so later history cannot overtake it; expiry still records its history.
+        ready_rows = []
+        for row in rows:
+            if (
+                row["publication_status"] not in ("published", "dead_letter")
+                and (datetime.now(UTC) - row["accepted_at"]).total_seconds() * 1000
+                < self.deadline_ms
+            ):
+                break
+            ready_rows.append(row)
+        rows = ready_rows
         # Batch only already-waiting attempts; never delay arrivals to fill a batch.
         for first in range(0, len(rows), 4):
             batch = rows[first : first + 4]
-            prepared = []
-            for row in batch:
-                if self.assign(row) is False:
-                    self.score_batch(prepared)
-                    return 0
-                prepared.append(row["event_id"])
-            self.score_batch(prepared)
+            if self.score_new_batch(batch):
+                return 0
         jobs = self.db.execute(
             """SELECT j.event_id FROM scoring_jobs j
           JOIN authorization_event_outbox o USING(event_id)
@@ -622,7 +878,13 @@ class ScoringWorker:
             self.score_batch([job["event_id"] for job in jobs[first : first + 4]])
         return len(rows) + len(jobs)
 
-    def delivery(self, message_id, fields):
+    def delivery(self, message_id, fields, *, acknowledgements=None):
+        def acknowledge():
+            if acknowledgements is None:
+                self.redis.xack(self.stream, self.group, message_id)
+            else:
+                acknowledgements.append(message_id)
+
         raw = fields.get("envelope", "")
         try:
             if set(fields) != {"envelope"} or not isinstance(raw, str):
@@ -648,14 +910,14 @@ class ScoringWorker:
                     digest(fields),
                 ),
             )
-            self.redis.xack(self.stream, self.group, message_id)
+            acknowledge()
             return
         state = self.db.execute(
             "SELECT status FROM scoring_jobs WHERE run_id=%s AND event_id=%s",
             (self.run_id, event_id),
         ).fetchone()
         if state and state["status"] in TERMINAL:
-            self.redis.xack(self.stream, self.group, message_id)
+            acknowledge()
         elif not state:
             event = self.db.execute(
                 "SELECT created_at,schema_version FROM authorization_events WHERE event_id=%s",
@@ -670,7 +932,20 @@ class ScoringWorker:
                   VALUES (%s,%s,%s,%s,'outside_run') ON CONFLICT DO NOTHING""",
                     (self.run_id, self.stream, message_id, digest(envelope)),
                 )
-                self.redis.xack(self.stream, self.group, message_id)
+                acknowledge()
+
+    def delivery_batch(self, messages):
+        # All audit evidence commits before any stream acknowledgement. Duplicate
+        # delivery after a lost COMMIT/ACK reuses the unique message identity.
+        acknowledgements = []
+        with (
+            self.profile_stage("delivery_audit_commit_ack", batch_size=len(messages)),
+            self.db.transaction(),
+        ):
+            for message_id, fields in messages:
+                self.delivery(message_id, fields, acknowledgements=acknowledgements)
+        if acknowledgements:
+            self.redis.xack(self.stream, self.group, *acknowledgements)
 
     def cycle(self):
         try:
@@ -697,10 +972,9 @@ class ScoringWorker:
             block=None if processed else 50,
         )
         stream_end = time.perf_counter()
-        for message_id, fields in list(claimed[1]) + [
-            m for _, messages in fresh for m in messages
-        ]:
-            self.delivery(message_id, fields)
+        messages = list(claimed[1]) + [m for _, messages in fresh for m in messages]
+        if messages:
+            self.delivery_batch(messages)
         self.ready_heartbeat()
         if os.environ.get("SCORING_DIAGNOSTICS") == "1":
             print(
@@ -732,6 +1006,7 @@ def main(argv=None):
     parser.add_argument("--fixture", action="store_true")
     parser.add_argument("--gate-report", type=Path)
     parser.add_argument("--gate-report-sha256")
+    parser.add_argument("--diagnostic-deadline-ms", type=int, choices=(2000,))
     args = parser.parse_args(argv)
     pg_url, redis_url = os.environ["POSTGRES_URL"], os.environ["REDIS_URL"]
     if args.fixture:
@@ -768,6 +1043,7 @@ def main(argv=None):
                 mode="fixture" if args.fixture else "application",
                 stream=os.environ.get("SCORING_STREAM", "authorization.events.v1"),
                 gate_report_pin=args.gate_report_sha256,
+                diagnostic_deadline_ms=args.diagnostic_deadline_ms,
             )
             while True:
                 worker.cycle()

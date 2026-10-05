@@ -37,6 +37,15 @@ def test_runtime_requires_complete_peak_evidence(tmp_path):
         check_workload(path, "f" * 64, 5, 600)
 
 
+def test_unqualified_image_diagnostic_cannot_activate(tmp_path):
+    report = evidence()
+    report["diagnostic_only"] = True
+    path = tmp_path / "diagnostic.json"
+    path.write_text(json.dumps(report))
+    with pytest.raises(ValueError, match="workload"):
+        check_workload(path, "f" * 64, 5, 600)
+
+
 def test_expiry_cannot_be_overridden_by_summary_pass(tmp_path):
     path = tmp_path / "load.json"
     report = evidence()
@@ -78,3 +87,15 @@ def test_runtime_rejects_precommit_only_evidence(tmp_path):
     path.write_text(json.dumps(report))
     with pytest.raises(ValueError, match="workload"):
         check_workload(path, "f" * 64, 5, 600)
+
+
+@pytest.mark.parametrize("required_tps,seconds", [(1, 60), (5, 600)])
+def test_diagnostic_rate_cannot_satisfy_activation_gate(
+    tmp_path, required_tps, seconds
+):
+    report = evidence()
+    report.update(tps=3, offered_transactions_per_second=3)
+    path = tmp_path / "diagnostic.json"
+    path.write_text(json.dumps(report))
+    with pytest.raises(ValueError, match="workload"):
+        check_workload(path, "f" * 64, required_tps, seconds)

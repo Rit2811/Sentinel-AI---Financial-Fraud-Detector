@@ -8,7 +8,7 @@ import os
 import subprocess
 from datetime import UTC, datetime
 from pathlib import Path
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from .serving import sha256
 from .worker_benchmark import keep_host_awake, profile_summary
@@ -23,11 +23,44 @@ def inspect_container(name):
 @keep_host_awake()
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--tps", type=int, choices=(1, 5), required=True)
+    parser.add_argument(
+        "--tps",
+        type=int,
+        choices=(1, 2, 3, 4, 5),
+        required=True,
+        help="Rates 2-4 are diagnostic only; activation still requires 1 and 5 TPS",
+    )
     parser.add_argument("--seconds", type=int, required=True)
+    parser.add_argument(
+        "--diagnostic",
+        action="store_true",
+        help="Short unqualified-image timing only; never activation evidence",
+    )
+    parser.add_argument("--diagnostic-deadline-ms", type=int, choices=(2000,))
+    parser.add_argument("--trial-run-id", type=UUID)
+    parser.add_argument("--candidate-run-id", type=UUID)
+    parser.add_argument("--qualification", action="store_true")
     args = parser.parse_args(argv)
+    deadline_trial = args.diagnostic_deadline_ms is not None
+    candidate_measurement = args.diagnostic or args.qualification
+    if args.qualification and (
+        args.diagnostic or not args.candidate_run_id or deadline_trial
+    ):
+        parser.error("Qualification requires a held one-second candidate run")
+    if args.candidate_run_id and (
+        not candidate_measurement or deadline_trial or args.trial_run_id
+    ):
+        parser.error("Candidate run requires one-second diagnostic mode")
+    if deadline_trial != (args.trial_run_id is not None) or (
+        deadline_trial and not args.diagnostic
+    ):
+        parser.error(
+            "Deadline trial requires --diagnostic, --trial-run-id and --diagnostic-deadline-ms 2000 together"
+        )
     if not 1 <= args.seconds <= 600:
         parser.error("Workload duration must be 1..600 seconds")
+    if args.diagnostic and not deadline_trial and args.seconds > 60:
+        parser.error("Unqualified diagnostic duration must not exceed 60 seconds")
     ml = Path(__file__).resolve().parents[2]
     root = ml.parents[1]
     environment = root / ".env.task6.local"
@@ -35,6 +68,15 @@ def main(argv=None):
     metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
     if sha256(environment) != metadata["environment_sha256"]:
         raise ValueError("Private application configuration changed")
+    original_run_id = metadata["run_id"]
+    if args.candidate_run_id:
+        if str(args.candidate_run_id) == original_run_id:
+            raise ValueError("Candidate measurement must preserve the original run")
+        metadata = dict(metadata, run_id=str(args.candidate_run_id))
+    if deadline_trial:
+        if str(args.trial_run_id) == original_run_id:
+            raise ValueError("Diagnostic deadline requires a separate run identity")
+        metadata = dict(metadata, run_id=str(args.trial_run_id))
     config = dict(
         line.split("=", 1)
         for line in environment.read_text(encoding="utf-8").splitlines()
@@ -53,8 +95,19 @@ def main(argv=None):
             or "sentinel-ai_default" not in detail["NetworkSettings"]["Networks"]
         ):
             raise ValueError("Application container/network not ready")
-        if key and detail["Image"] != metadata[key]:
+        if key and detail["Image"] != metadata[key] and not candidate_measurement:
             raise ValueError("Application image differs from qualified deployment")
+    if candidate_measurement:
+        metadata = dict(
+            metadata,
+            worker_image_id=inspect_container("sentinel-ai-scoring-worker-1")["Image"],
+            backend_image_id=inspect_container("sentinel-ai-api-1")["Image"],
+        )
+        if (
+            inspect_container("sentinel-ai-publisher-1")["Image"]
+            != metadata["backend_image_id"]
+        ):
+            raise ValueError("API and publisher must use the same diagnostic image")
     if not any(
         volume.get("Name") == "sentinel-ai-postgres-data"
         for volume in inspect_container("sentinel-ai-postgres-1")["Mounts"]
@@ -66,6 +119,8 @@ def main(argv=None):
         if "=" in value
     )
     worker_config = inspect_container("sentinel-ai-scoring-worker-1")["Config"]["Env"]
+    if args.candidate_run_id and api_config.get("SCORING_ACTIVATION_HOLD") != "1":
+        raise ValueError("Candidate measurement requires explicit activation hold")
     profiling = "SCORING_PROFILE=1" in worker_config
     resources = json.loads(
         subprocess.check_output(
@@ -88,6 +143,10 @@ def main(argv=None):
     output.mkdir(parents=True, exist_ok=False)
     name = "task6-application-controller-" + str(uuid4())
     temporary_env = ml / "artifacts/runtime" / (name + ".env")
+    diagnostic_metadata = ml / "artifacts/runtime" / (name + ".json")
+    if candidate_measurement:
+        with diagnostic_metadata.open("x", encoding="utf-8") as stream:
+            json.dump(metadata, stream)
     values = {
         "POSTGRES_URL": api_config["POSTGRES_URL"],
         "REDIS_URL": api_config["REDIS_URL"],
@@ -122,7 +181,10 @@ def main(argv=None):
     ]
     for source, target in [
         (Path(config["SCORING_BUNDLE_DIR"]), "/model"),
-        (metadata_path, "/application.json"),
+        (
+            diagnostic_metadata if candidate_measurement else metadata_path,
+            "/application.json",
+        ),
         *((source, package + "/" + source.name) for source in tool_files),
     ]:
         command.extend(
@@ -155,6 +217,10 @@ def main(argv=None):
             "/output/report.json",
         ]
     )
+    if candidate_measurement:
+        command.append("--profile-database-waits")
+    if deadline_trial:
+        command.extend(["--diagnostic-deadline-ms", "2000"])
     try:
         result = subprocess.run(
             command, capture_output=True, text=True, timeout=args.seconds + 180
@@ -176,18 +242,68 @@ def main(argv=None):
             "Controller only; no application worker/model source mounts changed"
         )
         report["docker_resources"] = resources
+        report["diagnostic_only"] = args.diagnostic
+        report["activation_authorized"] = False
+        report["original_one_second_requirement_unmet"] = True
+        report["original_application_run_id"] = original_run_id
         report["environment"]["stage_profiling"] = profiling
         if profiling:
             log = output / "worker-profile.log"
             logs = subprocess.run(
-                ["docker", "logs", "sentinel-ai-scoring-worker-1"],
+                [
+                    "docker",
+                    "logs",
+                    "--since",
+                    datetime.strptime(stamp, "%Y%m%dT%H%M%S%fZ")
+                    .replace(tzinfo=UTC)
+                    .isoformat(),
+                    "sentinel-ai-scoring-worker-1",
+                ],
                 capture_output=True,
                 text=True,
                 check=True,
             )
             log.write_text(logs.stdout + logs.stderr, encoding="utf-8")
             report["worker_stage_profile"] = profile_summary(log)
+        publisher = inspect_container("sentinel-ai-publisher-1")
+        if api_config.get("INGESTION_PROFILE") == "1":
+            log = output / "ingestion-profile.log"
+            since = (
+                datetime.strptime(stamp, "%Y%m%dT%H%M%S%fZ")
+                .replace(tzinfo=UTC)
+                .isoformat()
+            )
+            logs = subprocess.run(
+                ["docker", "logs", "--since", since, "sentinel-ai-api-1"],
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            log.write_text(logs.stdout + logs.stderr, encoding="utf-8")
+            report["ingestion_stage_profile"] = profile_summary(log)
+        if "PUBLISHER_PROFILE=1" in publisher["Config"]["Env"]:
+            log = output / "publisher-profile.log"
+            since = (
+                datetime.strptime(stamp, "%Y%m%dT%H%M%S%fZ")
+                .replace(tzinfo=UTC)
+                .isoformat()
+            )
+            logs = subprocess.run(
+                ["docker", "logs", "--since", since, "sentinel-ai-publisher-1"],
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            log.write_text(logs.stdout + logs.stderr, encoding="utf-8")
+            report["publisher_stage_profile"] = profile_summary(log)
         path.write_text(json.dumps(report, indent=2), encoding="utf-8")
+        if profiling:
+            from .trial_profile import event_profiles
+
+            traces = event_profiles(report, output)
+            (output / "event-stage-traces.json").write_text(
+                json.dumps(traces, indent=2), encoding="utf-8"
+            )
         print(
             json.dumps(
                 {
@@ -203,6 +319,7 @@ def main(argv=None):
             ["docker", "stop", "--time", "1", name], capture_output=True, check=False
         )
         temporary_env.unlink(missing_ok=True)
+        diagnostic_metadata.unlink(missing_ok=True)
 
 
 if __name__ == "__main__":

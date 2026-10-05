@@ -1,0 +1,27 @@
+# Diagnostic overlay; private application configuration is untouched.
+services:
+  api:
+    image: sentinel-ai-api:task6-deadline-trial
+    environment:
+      SCORING_RUN_ID: ${SCORING_TRIAL_RUN_ID:?A separate diagnostic run is required}
+  publisher:
+    image: sentinel-ai-api:task6-deadline-trial
+    environment:
+      PUBLISHER_PROFILE: '1'
+  scoring-worker:
+    image: sentinel-ai-scoring-worker:task6-deadline-trial
+    command:
+      - --bundle
+      - /model
+      - --bundle-sha256
+      - ${SCORING_BUNDLE_SHA256:?Frozen manifest is required}
+      - --run-id
+      - ${SCORING_TRIAL_RUN_ID:?A separate diagnostic run is required}
+      - --gate-report
+      - /gates/report.json
+      - --gate-report-sha256
+      - ${SCORING_GATE_REPORT_SHA256:?Existing final-test report is required}
+      - --diagnostic-deadline-ms
+      - '2000'
+    environment:
+      SCORING_PROFILE: '1'

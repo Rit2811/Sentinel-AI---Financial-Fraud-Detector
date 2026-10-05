@@ -1,0 +1,28 @@
+# Controlled one-second engineering measurement on the original application storage.
+services:
+  api:
+    image: ${SCORING_CANDIDATE_BACKEND:-sentinel-ai-api:task6-pipeline-profile}
+    environment:
+      SCORING_RUN_ID: ${SCORING_CANDIDATE_RUN_ID:?A separate candidate run is required}
+      SCORING_ACTIVATION_HOLD: '1'
+      INGESTION_PROFILE: '1'
+  publisher:
+    image: ${SCORING_CANDIDATE_BACKEND:-sentinel-ai-api:task6-pipeline-profile}
+    environment:
+      PUBLISHER_PROFILE: '1'
+  scoring-worker:
+    image: ${SCORING_CANDIDATE_IMAGE:-sentinel-ai-scoring-worker:task6-combined-commit}
+    restart: 'no'
+    command:
+      - --bundle
+      - /model
+      - --bundle-sha256
+      - ${SCORING_BUNDLE_SHA256:?Frozen manifest is required}
+      - --run-id
+      - ${SCORING_CANDIDATE_RUN_ID:?A separate candidate run is required}
+      - --gate-report
+      - /gates/report.json
+      - --gate-report-sha256
+      - ${SCORING_GATE_REPORT_SHA256:?Existing final-test report is required}
+    environment:
+      SCORING_PROFILE: '1'
