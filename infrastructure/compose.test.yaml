@@ -2,6 +2,7 @@ name: sentinel-task4-test
 
 services:
   postgres:
+    container_name: sentinel-ai-integration-postgres
     image: postgres:16.4-alpine3.20
     environment:
       POSTGRES_DB: sentinel_task4_test
@@ -19,6 +20,7 @@ services:
       start_period: 5s
 
   redis:
+    container_name: sentinel-ai-integration-redis
     image: redis:7.2.5-alpine3.20
     command: ["redis-server", "--save", "", "--appendonly", "no", "--requirepass", "sentinel_test_only"]
     ports:

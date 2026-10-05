@@ -1,15 +1,15 @@
 # Diagnostic overlay; private application configuration is untouched.
 services:
   api:
-    image: sentinel-ai-api:task6-deadline-trial
+    image: sentinel-ai-api:two-second-deadline-diagnostic
     environment:
       SCORING_RUN_ID: ${SCORING_TRIAL_RUN_ID:?A separate diagnostic run is required}
   publisher:
-    image: sentinel-ai-api:task6-deadline-trial
+    image: sentinel-ai-api:two-second-deadline-diagnostic
     environment:
       PUBLISHER_PROFILE: '1'
   scoring-worker:
-    image: sentinel-ai-scoring-worker:task6-deadline-trial
+    image: sentinel-ai-scoring-worker:two-second-deadline-diagnostic
     command:
       - --bundle
       - /model

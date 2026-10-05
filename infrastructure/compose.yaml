@@ -41,7 +41,7 @@ services:
 
   api:
     logging: *runtime-logging
-    image: sentinel-ai-api:task4
+    image: sentinel-ai-api:streaming-ingestion
     build:
       context: ../backend
     environment:
@@ -70,7 +70,7 @@ services:
 
   publisher:
     logging: *runtime-logging
-    image: sentinel-ai-api:task4
+    image: sentinel-ai-api:streaming-ingestion
     command: ["node", "src/stream/publisher.js"]
     environment: &worker-environment
       POSTGRES_URL: postgresql://${POSTGRES_USER:-sentinel}:${POSTGRES_PASSWORD:-sentinel_local_only}@postgres:5432/${POSTGRES_DB:-sentinel}
@@ -92,7 +92,7 @@ services:
     restart: unless-stopped
 
   consumer:
-    image: sentinel-ai-api:task4
+    image: sentinel-ai-api:streaming-ingestion
     command: ["node", "src/stream/consumer.js"]
     environment: *worker-environment
     depends_on:
@@ -101,7 +101,7 @@ services:
     restart: unless-stopped
 
   web:
-    image: sentinel-ai-web:task2
+    image: sentinel-ai-web:operations-dashboard
     build:
       context: ../frontend
     environment:
@@ -122,7 +122,7 @@ services:
   scoring-worker:
     logging: *runtime-logging
     profiles: [scoring]
-    image: sentinel-ai-scoring-worker:task6
+    image: sentinel-ai-scoring-worker:random-forest-scoring
     build:
       context: ../services/ml
     command:
