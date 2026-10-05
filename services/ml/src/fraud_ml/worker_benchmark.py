@@ -82,6 +82,7 @@ def durable_latency_report(db, run_id, event_ids=None):
     return {
         "p50": float(np.percentile(values, 50)) if values else None,
         "p95": float(np.percentile(values, 95)) if values else None,
+        "p99": float(np.percentile(values, 99)) if values else None,
         "maximum": max(values, default=None),
         "minimum": min(values, default=None),
         "over_1000": sum(t > 1000 for t in values),

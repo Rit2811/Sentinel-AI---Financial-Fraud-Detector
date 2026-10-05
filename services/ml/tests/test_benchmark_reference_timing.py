@@ -62,6 +62,8 @@ def test_manifest_checked_before_traffic_but_reference_model_loaded_after_termin
                         "ready": True,
                         "blocked": False,
                         "durability_contract": "postcommit-v1",
+                        "deadline_ms": 1000,
+                        "diagnostic_only": False,
                     }
                 )
             if "AS pending" in sql:

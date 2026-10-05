@@ -85,6 +85,7 @@ services:
       STREAM_POLL_MS: ${STREAM_POLL_MS:-500}
       STREAM_MAX_ATTEMPTS: ${STREAM_MAX_ATTEMPTS:-5}
       STREAM_RETENTION: ${STREAM_RETENTION:-10000}
+      PUBLISHER_PROFILE: ${PUBLISHER_PROFILE:-0}
     depends_on:
       api:
         condition: service_healthy
@@ -139,6 +140,7 @@ services:
       POSTGRES_URL: postgresql://${POSTGRES_USER:-sentinel}:${POSTGRES_PASSWORD:-sentinel_local_only}@postgres:5432/${POSTGRES_DB:-sentinel}
       REDIS_URL: redis://:${REDIS_PASSWORD:-sentinel_local_only}@redis:6379/0
       SCORING_STREAM: ${STREAM_NAME:-authorization.events.v1}
+      SCORING_PROFILE: ${SCORING_PROFILE:-0}
     volumes:
       - ${SCORING_BUNDLE_DIR:-../services/ml/artifacts/frozen/random-forest/20261002T075558874195Z}:/model:ro
       - ${SCORING_GATE_DIR:-../services/ml/reports/final-test}:/gates:ro

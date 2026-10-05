@@ -1,5 +1,41 @@
 # Task 6 Verification Record
 
+## Latest Storage/Pipeline Correction (2026-10-05)
+
+Read [the correction record](storage-and-pipeline-correction.md). No SSD is
+available; actual data/WAL are Linux ext4 within an HDD-backed Docker virtual
+disk. Original data was backed up with writers stopped, restored independently
+and verified across 18 table content hashes and 106 retained constraints.
+All original rows still match after qualification. Actual one-second normal
+qualification PASSED 600/600 over ten minutes, p95 549.259ms, max 951.522ms.
+Final paced short peak FAILED 294 Scored/6 Expired at nominal 5 TPS/60s;
+all scored parity and no late execution passed. Full peak was not attempted
+after the failed short check. Task 6 remains incomplete; activation is held.
+Stream audit COMMIT/ACK boundaries, publication waiting, startup reconciliation
+and paced arrivals were corrected using measured evidence. Existing publisher
+recovery is preserved with the same total 200ms publication budget.
+65 worker/tool/recovery checks (64 plus focused startup), 25 final tool checks,
+13 publisher integration/recovery checks and 156 final backend unit checks
+passed. An actual same-run restart retained all six candidate table fingerprints.
+Candidate worker is stopped, restart disabled; previous qualified API/publisher
+configuration is restored. Original private runtime/env hashes are unchanged.
+Later one-second evidence supersedes the historical status immediately below.
+
+## Latest Two-Second Trial (2026-10-05)
+
+The owner authorized a diagnostic two-second deadline while retaining the
+original one-second requirement and activation hold. Full evidence, storage
+placement, stage timings and recovery tests are in
+[the trial record](two-second-diagnostic-trial.md). Migration 0011 is applied
+to actual `sentinel`; the original run remains 1000ms. A combined-commit
+worker passed 85 ML/recovery checks. Actual full 1 TPS/600s passed 600/600,
+but full 5 TPS/600s failed with 2927 Scored/73 Expired, exact scored parity
+and no late execution. Therefore no revised deadline was adopted, and Task 6
+remains incomplete. The diagnostic worker was stopped; previous qualified
+API/publisher images were restored and verified. Public scoring readiness is
+HTTP 503. All older deployment statements below are historical snapshots and
+must not be treated as the current container state.
+
 ## Current Status
 
 Task 5 passed for the immutable sigmoid RF package; its reserved test was
@@ -7,7 +43,13 @@ evaluated once with owner authorization. Task 6 remains incomplete. Application
 storage is migrated and connected functionality is tested, but sustained peak
 deadline compliance on the actual persistent application database has failed.
 Application qualification ran with a stable identity; general scoring activation
-is blocked and the qualification worker is stopped between measurements.
+is blocked. The worker was stopped between the earlier measurements; see the
+latest diagnostic status above for the current hold.
+
+Latest publisher engineering checkpoint: see **Publisher Commit Reduction** at
+the end of this record. The owner explicitly authorized its implementation and
+testing, NOT activation or weaker durability. The previous unanswered-approval
+statements below are historical and no longer block this engineering change.
 
 This record supersedes earlier status statements in `task-6-worker-status.md`.
 No model, calibrator or policy was changed during these workload experiments.
@@ -618,3 +660,415 @@ Assignment/preparation fusion was considered but NOT implemented before the
 owner redirected this checkpoint to committing/pushing ritwik. Task 6 is NOT
 complete and Task 7 has not started. Keep historical failure evidence and all
 accumulated application records; do not relax the one-second/zero-expiry gates.
+
+## 2026-10-04 Durable Batch Qualification
+
+Task 5 remains COMPLETE; Task 6 remains INCOMPLETE, with general activation
+BLOCKED. Docker initially had no engine pipe; work resumed after the owner
+started the existing engine. Original application volumes and all nine migration
+entries were verified. No application reset, new model fit, reserved-test access,
+deadline/threshold change, or system-resource setting change occurred.
+
+### Implementation
+
+New published jobs persist history, immutable feature snapshots and first-attempt
+preparation in one transaction. Groups of at most four already-waiting events
+share the assignment checkpoint; there is no batch-fill delay. Private predictions
+share one synchronous COMMIT. Only AFTER its acknowledgement does a separate
+transaction create public results and once-only simulated executions. A failed
+prediction batch rolls back and rechecks individual deadlines; a deferred
+execution deadline failure rolls back every effect before individual recovery.
+Retries use existing checkpoints and never add duplicate history. The frozen
+feature, preprocessing, model, calibration and policy files were not edited.
+
+Candidate history is retained: fusion-only worker
+`sha256:3d10de55b8a39f2e14dcc9d8f8767fba902b7a5e362198b63a0324793c93fcb7`
+passed isolated rates but actual normal scored 59/60 and the short profile scored
+20/150. Both failures remain in private reports. The batched worker now pinned
+by runtime metadata is
+`sha256:39dfd04e02bfa75b8e4ec2ea138ad6752dd2dd2928d8eec24eb0f06915602683`.
+API/publisher remain
+`sha256:5a2bb17f7affd31a01be1818161b424357049962589e8178323f2f0a72ebeea7`.
+Previous worker is retained as `sentinel-ai-scoring-worker:task6-before-fusion`.
+Runtime requalification archived previous metadata and retained credentials and
+run ID `e7d43b39-fd79-4368-818d-899c2415434a`.
+
+### Load Evidence
+
+Report paths below are relative to `services/ml/reports/`; generated reports are
+private local artifacts, not Git content. Every row has full scored-row parity,
+zero invalid/late execution, no operational errors and no reserved-test access.
+
+| Target / Report | Rate / Seconds | Scored / Expired | Durable p95 / Max ms | Gate |
+| --- | --- | --- | --- | --- |
+| Isolated `task6-worker/20261004T151547461481Z` | 1 / 60 | 60 / 0 | 258.817 / 317.139 | PASS |
+| Isolated `task6-worker/20261004T151818362911Z` | 5 / 600 | 3000 / 0 | 257.949 / 748.729 | PASS |
+| Actual `task6-application-load/20261004T153215710833Z` | 1 / 60 | 60 / 0 | 583.246 / 856.493 | PASS |
+| Actual `task6-application-load/20261004T153400606949Z` | 5 / 600 | 2409 / 591 | 957.365 / 999.511 | FAIL |
+| Actual diagnostic `task6-application-load/20261004T154851323542Z` | 3 / 60 | 179 / 1 | 708.325 / 991.490 | FAIL |
+| Actual diagnostic `task6-application-load/20261004T155052666948Z` | 2 / 60 | 120 / 0 | 778.165 / 844.083 | PASS, diagnostic only |
+
+Peak offered exactly 5 TPS for 600s; queue sampled maximum seven, producer maximum
+schedule lag 407.667ms. Expiry rate was 19.7%, not zero. Conditional scored
+latencies exclude 591 expiries and must not be called whole-workload compliance.
+The highest observed zero-expiry rate is 2 TPS for a 60s sample; maximum or
+long-duration sustainable throughput is NOT established. CLI rates 2-4 are now
+available for diagnostics, but activation checks still require exactly 1 and 5.
+
+The opt-in batched profile `task6-application-load/20261004T154611367858Z`
+scored 115/150 with 35 Expired at 5 TPS/30s. Queue p95/max 982.918/1398.154ms;
+history p95 3.873ms; feature calculation p95 0.404ms; inference p95 141.401ms.
+Batch assignment/commit p95 193.559ms (CPU p95 40.272ms), prediction/commit
+p95 124.103ms (CPU p95 12.639ms), execution/commit p95 119.909ms (CPU p95
+25.036ms). Nested per-event timings exclude the outer batch commit; use the
+batch stages for acknowledgement timing. These are diagnostics, not gate passes.
+Full peak audit averages: scored publication/assignment waits 161/408ms;
+expired publication/assignment waits 267/810ms. Queue/database waits consume
+most remaining deadline budget; feature arithmetic is not the dominant cost.
+No revised deadline or traffic requirement has been proposed or applied.
+
+### Actions, Recovery and Hold
+
+Actual [action report](../services/ml/reports/task6-application/20261004T155259827723Z/report.json)
+passed Pass/Block/Review execution, authenticated review resolution, idempotent
+duplicate handling and conflict/unauthorized rejection. It was rechecked after
+a same-run worker restart with all recorded final results unchanged. An earlier
+action smoke failure remains retained; it was not rewritten as a pass. Human
+resolution remains separate from model decisions and creates no confirmed label.
+
+Fresh pre-change backup SHA-256:
+`737cffa9861947a48a09ad63c4c17d6f673236b6c9f0084c3b3d8f062a33f184`.
+Local file `services/ml/artifacts/database-recovery/20261003/sentinel-before-worker-fusion-20261004.dump`
+restored successfully into NEW isolated `sentinel_application_recovery_20261004`:
+nine migrations, 3983 events/jobs/history/snapshots, 324 Scored/executions and
+3659 Expired. The backup and prior checkpoints remain retained. Never restore
+over the application as a test shortcut; recovery requires a new isolated target,
+content verification and explicit review before any target switch.
+
+After all current measurements, actual application has 7707 events/jobs/history/
+snapshots, 3289 Scored and 4418 Expired, including historical failure evidence.
+Scoring worker is STOPPED; health is not ready, error `workload_gate_failed`.
+Original data and volumes remain intact. Task 7 has not started. Further
+database-path/queue performance engineering and a zero-expiry actual ten-minute
+peak pass remain required; existing owner approvals need not be requested again.
+
+Final verification: 72 worker/runtime/benchmark/action-tool checks passed in
+45.80s, with explicit isolated Redis restart enabled and no skips. Coverage
+includes checkpoint rollback/visibility, batch prediction commit visibility,
+delayed batch COMMIT expiry, timely-peer preservation, process death/uncertain
+commit recovery, duplicate effects/history, history restoration, Redis loss and
+restart, and rejection of diagnostic-rate activation evidence. Ruff check of
+all ML source/tests and git diff --check passed. There were 408 pre-existing
+NumPy/joblib deprecation warnings plus one pytest cache permission warning;
+neither was hidden or counted as a test failure. Backend code was not changed
+this turn; its previously recorded integration/unit passes were not rerun.
+Frozen manifest and authorized final-test report SHA-256 still match exactly
+`1e421627b7548e2a35de0e598fea23baa6996e316106346652d004c46d24d696` and
+`abdffc8e3e90bfe040c72577de795e48a7d514e6de470adcf7dfb9732a2e18c2`.
+Changes remain local on `ritwik`; no new commit/push/merge was authorized or done.
+
+## Candidate Index and Bulk Finalization Checkpoint
+
+Task 5 remains COMPLETE. Task 6 remains INCOMPLETE and activation BLOCKED.
+The current publisher protocol still uses a committed claim followed by a
+separately committed publication outcome. A proposed change to one bounded
+row-lock transaction spanning Redis publication and durable outcome storage
+requires owner approval; it has NOT been implemented. The asynchronous approval
+question remains unanswered. Existing policy/evaluation/deadline/database gates
+remain approved and must not be requested again.
+
+### Changes and Verification
+
+The former idle candidate query touched 4869 shared buffers and took 14.516ms
+in one EXPLAIN ANALYZE sample, scanning all 7707 historical events every poll.
+Migration `0010_scoring-candidate-index` adds a partial `(created_at,event_id)`
+index for schema 2.0. A materialized candidate-ID query now limits payload reads
+to unassigned events, preserving acceptance order and finding late commits;
+it does NOT advance a cursor that could silently skip an earlier commit.
+The first cold new-plan sample touched 608 shared buffers plus 39 reads, used
+an index-only candidate scan, and took 15.296ms. This is buffer/plan improvement,
+not proof of lower elapsed time. Do not claim it solved the load bottleneck.
+
+Batch finalization uses one dependency-linked data-modifying statement. It locks
+jobs, separately marks expired jobs, inserts results from previously COMMITTED
+private predictions and completes only jobs whose result insertion succeeded.
+Existing postcommit, immutable, once-only execution and deferred deadline guards
+remain active. An expired peer does not cause a timely peer to lose its decision;
+an abort rolls effects back before individual recovery. No prediction and
+execution commits were merged, and no durability setting was weakened.
+
+Seventy-three ML worker/runtime/benchmark/tool checks passed in 49.70s with
+explicit isolated Redis restart, no skips and 408 existing NumPy/joblib warnings.
+The same-transaction prediction rejection now tests both individual and bulk
+finalization. Five schema/migration integration checks passed in 31.854s,
+including populated-data preservation and isolated index rollback. Ruff check
+of all ML source/tests and ESLint on the changed backend test passed.
+
+API, publisher and worker targets were independently checked as
+`postgres:5432/sentinel`. After a fresh backup, the repository migration runner
+applied only migration 0010 to the application; its ledger has ten entries and
+all 7707 preexisting events remained intact. No database/volume reset or
+application schema downgrade occurred. The deployable backend image includes
+the migration, not just a successful isolated test or ephemeral SQL copy.
+
+### Exact Workloads
+
+Current worker: `sha256:f5fcba36304c0400509b0694342a6296ef7df51e644d39e09e6493fee0afa5bc`.
+Current API/publisher: `sha256:b6d0d7e396c067a434312905cbb7278c26974bcd8ecd7793257da8f59f5f9c6e`.
+Previous images are tagged `sentinel-ai-scoring-worker:task6-before-candidates`
+and `sentinel-ai-api:task6-before-index10`. Runtime pins were refreshed only
+after passing isolated qualification, with previous metadata archived and
+credentials/run identity unchanged.
+
+All paths below are relative to `services/ml/reports/`. Every workload retained
+full scored-row offline/live parity, no invalid/late execution, no operational
+errors and no reserved-test access. No model, feature, calibration or threshold
+changes were made.
+
+| Target / Report | Rate / Seconds | Scored / Expired | Durable p95 / Max ms | Gate |
+| --- | --- | --- | --- | --- |
+| Isolated `task6-worker/20261004T162758734524Z` | 1 / 60 | 60 / 0 | 289.887 / 442.451 | PASS |
+| Isolated `task6-worker/20261004T163033573408Z` | 5 / 600 | 3000 / 0 | 270.288 / 626.956 | PASS |
+| Actual `task6-application-load/20261004T164608670040Z` | 1 / 60 | 60 / 0 | 570.536 / 921.955 | PASS |
+| Actual `task6-application-load/20261004T164751054593Z` | 5 / 600 | 2418 / 582 | 962.101 / 999.877 | FAIL |
+
+Actual peak offered 5 TPS for the entire 600s: expiry rate 19.4%, sampled queue
+maximum seven, producer maximum schedule lag 675.467ms. Conditional scored
+latencies exclude expiries and cannot establish whole-workload compliance.
+Query/finalization changes did not materially resolve peak throughput versus
+the prior 2409/591 result. The highest earlier observed zero-expiry diagnostic
+rate remains 2 TPS for 60s, not a proven maximum or revised requirement.
+
+### Storage Evidence and Recovery
+
+The installed native `pg_test_fsync` utility tested a verified nonexistent,
+uniquely named synthetic file in the original PostgreSQL volume, OUTSIDE load
+measurements. It removed its own probe file; its absence was verified. With one
+8KiB write, default `fdatasync` measured 28.464 ops/s (35.132ms/op); with two
+8KiB writes, 28.635 ops/s (34.922ms/op). Other sync methods also showed latency;
+this was a short diagnostic, not a tuning recommendation or application capacity
+guarantee. `wal_sync_method=fdatasync`, `fsync=on` and `synchronous_commit=on`
+were verified and remain unchanged, as do host/Docker resource settings.
+
+Pre-index backup SHA-256:
+`ad950c1e686ccc96af7d6c1348b3e7a516063e3d1b9e3cc40ea185f317ba1110`.
+It restored into NEW isolated `sentinel_preindex_recovery_20261004`: nine
+migrations and 7707 events/jobs/history/snapshots, with 3289 Scored/4418 Expired.
+
+After measurements and action/restart checks, the application has 10770
+events/jobs/history/snapshots, 5770 Scored/results/executions, 5000 Expired,
+6324 private predictions and three human review resolutions. Historical failed
+runs remain intact. Current populated schema-10 backup:
+`services/ml/artifacts/database-recovery/20261003/sentinel-schema10-task6-checkpoint-20261004.dump`.
+SHA-256: `50adbb07ca5b8efcb8519c0018561d90dc58448bcadfc501eb17112fad1d93ce`.
+It restored successfully into NEW isolated `sentinel_schema10_recovery_20261004`.
+All eight canonical table-content MD5 fingerprints/counts matched actual versus
+restored events, snapshots, history, jobs, predictions, results, executions and
+reviews. MD5 here is a content-comparison check; the dump integrity pin is SHA-256.
+
+Actual action report `task6-application/20261004T165900589090Z/report.json` passed
+Pass/Block/Review, authorized human resolution, duplicates/conflicts/unauthorized
+requests, and was reverified unchanged after a same-run worker restart. Review
+resolution creates no fraud label. Scoring is STOPPED and health marked not ready
+with `workload_gate_failed`. General activation remains blocked. Do not reset
+storage, overwrite the application with a restore, repeat the reserved evaluation
+or start Task 7. The dependent publisher change is paused pending explicit owner
+approval, followed by recovery tests and new exact-image workload qualification.
+
+## Publisher Commit Reduction
+
+Owner approved baseline measurement, a recovery-safe commit reduction, changed
+failure-boundary tests and progressive benchmarks on 2026-10-04. No activation,
+deadline extension, relaxed durability or reserved-model reevaluation was
+authorized. Task 5 stays COMPLETE; Task 6 stays INCOMPLETE.
+
+### Environment and Baseline
+
+Host: Intel i5-6200U, two physical/four logical cores, about 8 GiB Windows RAM.
+Docker reports four CPUs and 1,998,868,480 memory bytes (1.862 GiB). Original
+database volume is `sentinel-ai-postgres-data`, mounted at
+`/var/lib/postgresql/data`, backed by Docker's
+`C:/Users/lenovo/AppData/Local/Docker/wsl/disk/docker_data.vhdx` on the C-drive
+SATA HDD (ST1000DM003-1ER162, 1 TB). No storage/resource/security settings changed.
+`fsync=on`, `synchronous_commit=on`, `wal_sync_method=fdatasync` were verified.
+
+Initial host free memory was 978,004 KiB; before the clean baseline, 1,097,824 KiB.
+A three-second competing-CPU sample measured Docker Desktop 0.609 CPU seconds,
+Docker backend 0.547, VS Code 0.109 and the inspection PowerShell 0.922. VS Code,
+Defender and Docker remained running; no applications were closed or excluded.
+Builds and test suites completed before measured traffic; isolated test services
+were stopped for application measurements. A few read-only progress queries ran
+during isolated qualification; no schema/code/configuration changed mid-workload.
+
+The first instrumented baseline, application report
+`20261004T173236488879Z`, failed with a producer pause: only 22 durable acceptances
+(5 Scored/17 Expired), despite 150 configured attempts. Offered traffic was only
+0.733 TPS. It is retained, NOT a valid sustained 5 TPS comparison.
+
+Clean baseline `20261004T174303369268Z` offered 5 TPS for 30s: 112 Scored/38 Expired.
+Per-event queue wait and worker stages are in `worker-profile.log`; Redis and
+publication stages are in `publisher-profile.log`. Logs contain safe UUID/timing
+records, not payloads, card tokens, labels or probabilities. Non-blocking logging
+may drop records; durable database outcomes remain authoritative.
+
+### Protocol and Measured Improvement
+
+See [publisher protocol](publisher-recovery-protocol.md). The active entrypoint
+no longer durably commits a claim before sending. It fences concurrent publishers
+with a transaction-scoped advisory lock, locks at most four already-waiting rows
+in canonical acceptance order, publishes sequentially with bounded Redis calls,
+records outcomes on the SAME PostgreSQL client and commits once. It never waits
+to fill a batch. A blocked retry/legacy claim prevents later rows overtaking it.
+
+Failed batches roll back wholly. Separate compare-and-set failure storage preserves
+retry/dead-letter evidence without regressing published rows. Redis acceptance
+and PostgreSQL commit are NOT atomic: accepted prefixes or lost commit replies
+can cause canonical-ID redelivery. Existing worker uniqueness/checkpoints preserve
+once-only history, features, predictions, results and separate execution.
+
+| Actual application timing, ms p95 | Clean baseline | Candidate |
+| --- | ---: | ---: |
+| Claim transaction including commit / new lock preparation | 133.964 | 16.497 |
+| Claim COMMIT acknowledgement | 122.519 | Removed |
+| Redis publication | 15.326 | 15.831 |
+| Per-event committed outcome / new uncommitted outcome statement | 132.034 | 7.253 |
+| New batch COMMIT acknowledgement | Not applicable | 111.428 |
+| Acceptance-to-worker-assignment queue | 991.451 | 660.256 |
+| Feature calculation | 0.451 | 0.347 |
+| Inference | 173.702 | 119.780 |
+| Worker assignment checkpoint, including batch commit | 175.968 | 142.201 |
+| Worker prediction batch commit | 148.980 | 128.733 |
+| Worker execution batch commit | 110.593 | 116.609 |
+
+Rows comparing committed versus uncommitted statements are deliberately labelled;
+do not sum overlapping timing scopes or treat p95s as additive per-event times.
+Baseline used 143 nonempty claim commits plus 150 outcome commits; candidate used
+150 nonempty batch commits (48.8% fewer publisher durable commits).
+
+Baseline PostgreSQL active-state samples included 429 WALSync, 273 WALWrite-lock
+and six WALWrite observations, versus 270 CPU/Running. Together WAL sync/write
+states were 708/1002 samples (70.7%). Publisher commit CPU p95 was under 2.3ms.
+This confirms substantial durable-write waiting in the persistent database;
+sampling counts are not exact stage wall-time percentages or a sole-cause proof.
+Feature calculation is not a dominant measured cost.
+
+Candidate application diagnostic `20261004T174543566781Z` offered the same 5 TPS
+for 30s: 147 Scored/3 Expired, full scored parity, zero late execution or operational
+errors. Queue maximum fell five to three. Conditional scored latency p95 fell
+947.904 to 886.254ms; expiries are excluded, so neither run passes activation.
+
+### Verification and Workload Gate
+
+Candidate API/publisher image:
+`sha256:92aac19cd94749b2cdbc17561424f37e4bc6c19c3f4503fbbaae9c43903de013`.
+Frozen worker unchanged:
+`sha256:f5fcba36304c0400509b0694342a6296ef7df51e644d39e09e6493fee0afa5bc`.
+The instrumented old-protocol baseline and previous qualified backend are retained
+under `task6-publisher-baseline` and `task6-before-publisher` image tags.
+
+12 publisher integration checks passed: concurrent publishers/order, bounded
+batch size, failed-prefix rollback/ordered recovery, Redis accepted/reply lost,
+uncertain successful COMMIT, real Redis pause/timeout/socket closure/reconnect,
+abandoned legacy claim and actual publisher process death before COMMIT. All 46
+backend integration and 154 unit checks passed on the production changes.
+76 focused ML/runtime/tool checks passed (50.49s), including actual Redis restart,
+uncertain commits, history restoration, late-result prevention and a direct
+active-publisher-death/independent-ready-publisher-to-worker recovery test.
+That test proves canonical same-card replay feature parity and exactly one
+history/snapshot/prediction/result/execution per event across all three actions.
+Process setup finishes before event acceptance; the one-second deadline remains
+unchanged. Its first cold-setup attempt failed and was not counted as a pass.
+408 existing NumPy/joblib deprecation warnings remain. No checks were skipped.
+
+| Isolated report under `services/ml/reports/task6-worker/` | Workload | Scored / Expired | Durable p95 / Max ms | Result |
+| --- | --- | --- | --- | --- |
+| `20261004T174801323927Z` | 1 TPS / 60s | 60 / 0 | 303.482 / 360.265 | PASS |
+| `20261004T175032012752Z` | 5 TPS / 600s | 2940 / 60 | 602.229 / 998.784 | FAIL |
+| `20261004T180330925508Z` | Profile, 5 TPS / 30s | 150 / 0 | 281.133 / 511.000 | Diagnostic only |
+
+Full isolated peak offered exactly 5 TPS, with queue maximum five, no operational
+failures, 2940 exact parity checks and zero late executions. Observed timely
+output was 4.9 TPS, but 2% expiry is NOT sustainable deadline-compliant acceptance
+at 5 TPS. Scored mean publication/terminal times were 44/202ms; expired means
+114/1097ms. The publication timestamp precedes its COMMIT acknowledgement; these
+means do not exclude a publisher commit/scheduling tail. Full-run profiling was
+off, so the precise location of those tail delays is not established by this
+comparison alone.
+
+One VM pressure sample during peak showed CPU some avg60 15.10%, I/O full avg60
+0.36%, memory full avg60 0.03%; Windows free memory was 1,567,824 KiB. The subsequent
+short tmpfs profile had queue p95 145.124ms, inference p95 139.147ms and assignment
+checkpoint p95 28.424ms. It did NOT reproduce the full-run failures. Their exact
+tail-delay root cause remains unresolved; do not attribute all of them to HDD
+flushes or claim a successful short run proves sustained reliability.
+
+Qualification failed. Candidate runtime pins were NOT promoted, and the dependent
+full actual-application peak gate was NOT bypassed. Short unqualified-image
+application diagnostics are explicitly marked `diagnostic_only`; runtime loading
+rejects that evidence even if its traffic/outcomes otherwise pass. No arbitrary
+follow-up performance edits, model changes or revised limits were applied.
+
+### Actual Normal-Rate Feasibility and Hold
+
+Candidate application report `20261004T181449763174Z` offered exactly 1 TPS for
+60 seconds on original persistent storage: 58 Scored/2 Expired, 58 exact parity
+checks, zero late executions, no operational errors and queue maximum one.
+Conditional scored durable p95/max were 646.724/968.029ms. This is explicitly
+unqualified-image diagnostic evidence, not an activation pass. Active database
+samples included 311 WALSync, 39 WALWrite-lock, one WALWrite, 72 DataFileRead and
+348 CPU/Running observations. These show continued write/read waiting but do not
+isolate the precise cause of the two expiry tails.
+
+No zero-expiry sustainable actual-storage rate has been established for this
+candidate: even controlled 1 TPS failed. The observed 4.9 timely TPS during full
+isolated peak is output WITH expiry losses, not acceptable admission capacity.
+Earlier 2 TPS/60s zero-expiry evidence belongs to a previous build and remains
+short-window evidence, not a proven maximum or new limit. Running a higher-rate
+feasibility test after the current normal-rate miss would not establish reliable
+capacity. No further small optimizations or blind full-run repetitions were made.
+
+Candidate full actual peak was not run: isolated exact-image qualification and
+actual normal feasibility both failed. Runtime pins remain at the previous
+qualified backend, and the general scoring hold remains mandatory. Further
+engineering needs a trace of the sustained/normal tail failures rather than
+assuming that publisher commits, features or model weights are the sole cause.
+The tested commit reduction remains local and in its separately retained image;
+it was not promoted as a qualified deployment. Task 7 has not started.
+
+### Final Recovery and Deployment State
+
+Fresh populated schema-10 recovery dump:
+`services/ml/artifacts/database-recovery/20261003/sentinel-after-publisher-engineering-20261004.dump`.
+SHA-256: `8d6f593f6e6422fb811b10b6d98bba171ea6f58d490d4eed980b55c29977c537`.
+The same hash was verified after copying into the isolated container. It restored
+into verified-new `sentinel_publisher_recovery_20261004`, with ten ledger entries.
+Nine canonical row-count/content-MD5 comparisons matched actual versus restored:
+
+| Table | Rows | Content fingerprint |
+| --- | ---: | --- |
+| authorization_event_outbox | 11152 | 170aacb9dbbb04e53aac053e2452eb0a |
+| authorization_events | 11152 | 707d2d8904c202e1a163eb14bdb1783a |
+| review_resolutions | 3 | e0014fe65465794c53b6417a36ef3113 |
+| scoring_feature_snapshots | 11152 | 65f42f718ac467543c16d7941800863c |
+| scoring_history | 11152 | 9c821e76c94be7ca832cdef4de3dc02e |
+| scoring_jobs | 11152 | 1b63b2557812f365c757126a3167662a |
+| scoring_predictions | 6661 | 33a5324942b70f9b247775ff0b5597df |
+| scoring_results | 6092 | 6cac231cfe355473015ffe979a33ee1e |
+| simulated_executions | 6092 | 4e3b587e2707f0bc6a8954de496f01bd |
+
+MD5 here compares canonical row content; the dump integrity pin is SHA-256.
+Original application has 6092 Scored and 5060 Expired, including retained prior
+failures. All old backups and original volumes remain intact. Recovery remains:
+stop scoring, preserve original storage, restore into a NEW isolated target,
+verify ledger/content, and obtain explicit review before any target switch.
+Never restore over the application or downgrade/reset populated storage.
+
+Previous qualified backend image
+`sha256:b6d0d7e396c067a434312905cbb7278c26974bcd8ecd7793257da8f59f5f9c6e`
+is restored for API/publisher, matching existing private runtime pins. Candidate
+and baseline images are retained separately. Worker is STOPPED, health is false
+with `workload_gate_failed`; no activation occurred. Isolated services are stopped
+after verification (their tmpfs restore is disposable; the verified dump remains).
+Final backend integration rerun passed all 46 checks in 25.798s. Frozen manifest
+and reserved-report integrity remain unchanged; no new commit/push/merge or Task 7
+work was performed.

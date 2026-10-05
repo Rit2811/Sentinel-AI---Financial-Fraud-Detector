@@ -10,6 +10,8 @@ import os
 import platform
 import subprocess
 import time
+import threading
+from collections import Counter
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from urllib.error import HTTPError
@@ -34,11 +36,21 @@ from .worker_benchmark import (
 
 def latency_summary(values):
     return {
+        "count": len(values),
+        "minimum": min(values, default=None),
         "p50": float(np.percentile(values, 50)) if values else None,
         "p95": float(np.percentile(values, 95)) if values else None,
+        "p99": float(np.percentile(values, 99)) if values else None,
         "maximum": max(values, default=None),
         "over_1000": sum(value > 1000 for value in values),
     }
+
+
+def paced_due(start, index, tps, previous):
+    """Missed slots extend the window instead of causing a catch-up burst."""
+    return (
+        max(start + index / tps, previous + 1 / tps) if previous is not None else start
+    )
 
 
 def generated_event(index, namespace=None):
@@ -105,14 +117,23 @@ def main(argv=None):
     parser.add_argument("--bundle-sha256", required=True)
     parser.add_argument("--run-id", required=True)
     parser.add_argument("--base", required=True)
-    parser.add_argument("--tps", type=int, choices=(1, 5), required=True)
+    parser.add_argument(
+        "--tps",
+        type=int,
+        choices=(1, 2, 3, 4, 5),
+        required=True,
+        help="Rates 2-4 are diagnostic only; activation still requires 1 and 5 TPS",
+    )
     parser.add_argument("--seconds", type=int, required=True)
     parser.add_argument("--application", action="store_true")
     parser.add_argument("--output", type=Path)
     parser.add_argument("--application-docker-client", action="store_true")
+    parser.add_argument("--profile-database-waits", action="store_true")
     parser.add_argument("--runtime-metadata", type=Path)
+    parser.add_argument("--diagnostic-deadline-ms", type=int, choices=(2000,))
     args = parser.parse_args(argv)
     run_id = str(UUID(args.run_id))
+    deadline_ms = args.diagnostic_deadline_ms or 1000
     if args.application_docker_client and not args.application:
         raise ValueError("Docker application client requires explicit application mode")
     if (
@@ -160,6 +181,8 @@ def main(argv=None):
             or run["blocked"]
             or run["durability_contract"] != "postcommit-v1"
             or (args.application and not run["gate_report_sha256"])
+            or run["deadline_ms"] != deadline_ms
+            or run["diagnostic_only"] != (args.diagnostic_deadline_ms is not None)
         ):
             raise ValueError("Matching ready fixture worker required")
         namespace = str(uuid4()) if args.application else None
@@ -207,6 +230,50 @@ def main(argv=None):
             [],
         )
 
+        wait_samples = Counter()
+        wait_stop = threading.Event()
+        wait_errors, blocked_samples, probe_durations = [], [], []
+        wal_before = (
+            db.execute(
+                "SELECT wal_records,wal_bytes::text,wal_write,wal_sync,wal_write_time,wal_sync_time FROM pg_stat_wal"
+            ).fetchone()
+            if args.profile_database_waits
+            else {}
+        )
+
+        def sample_database_waits():
+            try:
+                with psycopg.connect(
+                    pg,
+                    autocommit=True,
+                    row_factory=dict_row,
+                    connect_timeout=3,
+                    options="-c statement_timeout=1000 -c lock_timeout=1000",
+                ) as probe:
+                    while not wait_stop.wait(0.05):
+                        tick = time.perf_counter()
+                        rows = probe.execute(
+                            "SELECT coalesce(wait_event_type,'CPU') AS type, coalesce(wait_event,'Running') AS event,cardinality(pg_blocking_pids(pid)) AS blockers FROM pg_stat_activity WHERE pid<>pg_backend_pid() AND state='active'"
+                        ).fetchall()
+                        probe_durations.append((time.perf_counter() - tick) * 1000)
+                        for row in rows:
+                            wait_samples[row["type"] + ":" + row["event"]] += 1
+                        if any(row["blockers"] for row in rows):
+                            blocked_samples.append(
+                                {
+                                    "observed_at": datetime.now(UTC).isoformat(),
+                                    "blocked_backends": sum(
+                                        bool(row["blockers"]) for row in rows
+                                    ),
+                                }
+                            )
+            except psycopg.Error as error:
+                wait_errors.append(type(error).__name__)
+
+        wait_thread = threading.Thread(target=sample_database_waits, daemon=True)
+        if args.profile_database_waits:
+            wait_thread.start()
+
         def observe(event_id, submitted):
             until = time.perf_counter() + 5
             while time.perf_counter() < until:
@@ -233,18 +300,26 @@ def main(argv=None):
                 "http_observed_ms": (time.perf_counter() - submitted) * 1000,
             }
 
-        with concurrent.futures.ThreadPoolExecutor(max_workers=32) as observers:
-            start = time.perf_counter()
-            for index in range(args.tps * args.seconds):
-                time.sleep(max(0, start + index / args.tps - time.perf_counter()))
-                try:
-                    lags.append(producer_lag_seconds(start, index, args.tps))
-                except RuntimeError:
-                    failures.append({"kind": "producer_pause", "attempts_sent": index})
-                    break
-                event = generated_event(index, namespace)
-                attempts.append(event)
-                submitted = time.perf_counter()
+        arrival_records = []
+        card_locks = [threading.Lock() for _ in range(20)]
+        send_lock = threading.Lock()
+        last_sent = [None]
+
+        def send_and_observe(index, event):
+            with card_locks[index % 20]:
+                with send_lock:
+                    if last_sent[0] is not None:
+                        time.sleep(
+                            max(0, last_sent[0] + 1 / args.tps - time.perf_counter())
+                        )
+                    submitted = time.perf_counter()
+                    last_sent[0] = submitted
+                record = dict(
+                    event_id=event["event_id"],
+                    send_at_seconds=submitted - start,
+                    send_at=datetime.now(UTC).isoformat(),
+                )
+                arrival_records.append(record)
                 try:
                     status, response = call(
                         args.base + "/api/v1/authorization-events",
@@ -252,15 +327,38 @@ def main(argv=None):
                         event,
                         {"Idempotency-Key": str(uuid4())},
                     )
+                    record["ingestion_response_ms"] = (
+                        time.perf_counter() - submitted
+                    ) * 1000
                     if status != 202 or response.get("outcome") != "accepted":
                         failures.append({"kind": "ingestion", "status": status})
-                    else:
-                        confirmed.append(event)
-                        futures.append(
-                            observers.submit(observe, event["event_id"], submitted)
-                        )
+                        return None
+                    confirmed.append(event)
                 except (HTTPError, OSError) as error:
                     failures.append({"kind": "ingestion", "type": type(error).__name__})
+                    return None
+            return observe(event["event_id"], submitted)
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=32) as observers:
+            start = time.perf_counter()
+            previous = None
+            for index in range(args.tps * args.seconds):
+                time.sleep(
+                    max(
+                        0,
+                        paced_due(start, index, args.tps, previous)
+                        - time.perf_counter(),
+                    )
+                )
+                try:
+                    lags.append(producer_lag_seconds(start, index, args.tps))
+                except RuntimeError:
+                    failures.append({"kind": "producer_pause", "attempts_sent": index})
+                    break
+                event = generated_event(index, namespace)
+                attempts.append(event)
+                previous = time.perf_counter()
+                futures.append(observers.submit(send_and_observe, index, event))
                 if index % (args.tps * 10) == 0:
                     q = db.execute(
                         """SELECT count(*) AS pending,coalesce(max(extract(epoch FROM clock_timestamp()-e.created_at)),0) AS oldest
@@ -277,8 +375,22 @@ def main(argv=None):
                     )
             production_seconds = time.perf_counter() - start
             time.sleep(max(0, start + args.seconds - time.perf_counter()))
-            samples = [future.result() for future in futures]
+            samples = [
+                result for future in futures if (result := future.result()) is not None
+            ]
         elapsed = time.perf_counter() - start
+        wait_stop.set()
+        if args.profile_database_waits:
+            wait_thread.join(timeout=5)
+            if wait_thread.is_alive():
+                wait_errors.append("probe_did_not_stop")
+        wal_after = (
+            db.execute(
+                "SELECT wal_records,wal_bytes::text,wal_write,wal_sync,wal_write_time,wal_sync_time FROM pg_stat_wal"
+            ).fetchone()
+            if args.profile_database_waits
+            else {}
+        )
         # The reference model is needed only after traffic; avoid a second live RF.
         scorer = FrozenScorer(args.bundle, args.bundle_sha256)
         scorer.verify_references()
@@ -335,6 +447,18 @@ def main(argv=None):
             for state in ("scored", "expired", "failed", "observation_timeout")
         }
         event_ids = [event["event_id"] for event in attempts]
+        arrivals = db.execute(
+            """SELECT event_id::text,min(received_at) AS accepted_at
+            FROM ingestion_attempts WHERE outcome='accepted' AND event_id=ANY(%s::uuid[])
+            GROUP BY event_id ORDER BY accepted_at,event_id""",
+            (event_ids,),
+        ).fetchall()
+        server_intervals = [
+            (b["accepted_at"] - a["accepted_at"]).total_seconds() * 1000
+            for a, b in zip(arrivals, arrivals[1:])
+        ]
+        send_times = sorted(r["send_at_seconds"] for r in arrival_records)
+        send_intervals = [(b - a) * 1000 for a, b in zip(send_times, send_times[1:])]
         durable = durable_latency_report(db, run_id, event_ids)
         stored = {
             row["status"]: row["n"]
@@ -348,6 +472,24 @@ def main(argv=None):
             FROM simulated_executions x JOIN scoring_jobs j USING(run_id,event_id) WHERE j.run_id=%s AND j.event_id=ANY(%s::uuid[])""",
             (run_id, event_ids),
         ).fetchone()
+        event_timings = [
+            dict(row)
+            for row in db.execute(
+                """SELECT j.event_id::text,j.status,extract(epoch FROM (f.created_at-j.created_at))*1000 AS snapshot_witness_ms,
+              extract(epoch FROM (o.published_at-j.created_at))*1000 AS publication_precommit_witness_ms,
+              extract(epoch FROM (j.updated_at-j.created_at))*1000 AS terminal_precommit_witness_ms,
+              extract(epoch FROM (p.inference_started_at-j.created_at))*1000 AS inference_start_ms,
+              p.inference_ms,extract(epoch FROM (j.deadline_at-j.created_at))*1000 AS deadline_ms
+            FROM scoring_jobs j JOIN scoring_feature_snapshots f USING(run_id,event_id)
+            JOIN authorization_event_outbox o USING(event_id) LEFT JOIN scoring_predictions p USING(run_id,event_id)
+            WHERE j.run_id=%s AND j.event_id=ANY(%s::uuid[])""",
+                (run_id, event_ids),
+            ).fetchall()
+        ]
+        event_timings = [
+            {k: float(v) if hasattr(v, "as_tuple") else v for k, v in row.items()}
+            for row in event_timings
+        ]
         published = db.execute(
             "SELECT count(*) AS n FROM authorization_event_outbox o JOIN scoring_jobs j USING(event_id) WHERE j.run_id=%s AND j.event_id=ANY(%s::uuid[]) AND o.status='published'",
             (run_id, event_ids),
@@ -367,8 +509,36 @@ def main(argv=None):
             "client_confirmed_accepted": len(confirmed),
             "accepted_without_confirmed_response": len(canonical) - len(confirmed),
             "offered_transactions_per_second": len(attempts)
-            / max(args.seconds, production_seconds),
+            / max(
+                args.seconds,
+                production_seconds,
+                (send_times[-1] + 1 / args.tps) if send_times else args.seconds,
+            ),
             "producer_schedule_max_lag_ms": max(lags, default=0) * 1000,
+            "pacing": {
+                "policy": "Independent HTTP sends; no catch-up slots; per-card send lock",
+                "expected_interval_ms": 1000 / args.tps,
+                "send_intervals_ms": latency_summary(send_intervals),
+                "server_acceptance_intervals_ms": latency_summary(server_intervals),
+                "send_intervals_below_half_target": sum(
+                    x < 500 / args.tps for x in send_intervals
+                ),
+                "server_intervals_below_half_target": sum(
+                    x < 500 / args.tps for x in server_intervals
+                ),
+                "ingestion_response_ms": latency_summary(
+                    [
+                        r["ingestion_response_ms"]
+                        for r in arrival_records
+                        if "ingestion_response_ms" in r
+                    ]
+                ),
+            },
+            "arrival_records": arrival_records,
+            "server_acceptance_records": [
+                {"event_id": r["event_id"], "accepted_at": r["accepted_at"].isoformat()}
+                for r in arrivals
+            ],
             "terminal_counts": counts,
             "durable_status_counts": stored,
             "execution_checks": executions,
@@ -392,6 +562,27 @@ def main(argv=None):
                 ]
             ),
             "queue_samples": queues,
+            "database_active_wait_samples": dict(wait_samples),
+            "database_probe_errors": wait_errors,
+            "database_blocked_samples": blocked_samples,
+            "database_probe_query_ms": latency_summary(probe_durations),
+            "database_wal_delta": {
+                key: float(wal_after[key]) - float(wal_before[key])
+                for key in wal_before
+            },
+            "database_io_timing_enabled": db.execute("SHOW track_io_timing").fetchone()[
+                "track_io_timing"
+            ]
+            if args.profile_database_waits
+            else None,
+            "database_wal_io_timing_enabled": db.execute(
+                "SHOW track_wal_io_timing"
+            ).fetchone()["track_wal_io_timing"]
+            if args.profile_database_waits
+            else None,
+            "event_database_timings": event_timings,
+            "deadline_ms": deadline_ms,
+            "diagnostic_only": args.diagnostic_deadline_ms is not None,
             "queue_maximum": max((q["pending"] for q in queues), default=0),
             "failures": failures,
             "samples": samples,
@@ -402,7 +593,8 @@ def main(argv=None):
             and executions == {"total": target, "invalid_or_late": 0}
             and durable["count"] == target
             and durable["minimum"] is not None
-            and 0 <= durable["minimum"] <= durable["maximum"] <= 1000,
+            and 0 <= durable["minimum"] <= durable["maximum"] <= deadline_ms
+            and not wait_errors,
             "reserved_test_accessed": False,
             "commit_deadline_verification": "postcommit-v1",
             "measurement_mode": "application" if args.application else "fixture",

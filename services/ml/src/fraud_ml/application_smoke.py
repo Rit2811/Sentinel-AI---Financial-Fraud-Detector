@@ -10,7 +10,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import numpy as np
 from threadpoolctl import threadpool_limits
@@ -108,6 +108,7 @@ def generated_cases(scorer):
 @threadpool_limits.wrap(limits=1)
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--diagnostic-run-id", type=UUID)
     parser.add_argument(
         "--verify-report",
         type=Path,
@@ -125,8 +126,12 @@ def main(argv=None):
     metadata = json.loads((ml_root / "artifacts/runtime/application.json").read_text())
     if config["SCORING_RUN_ID"] != metadata["run_id"]:
         raise ValueError("Application run identity mismatch")
+    if args.diagnostic_run_id:
+        if str(args.diagnostic_run_id) == metadata["run_id"]:
+            raise ValueError("Diagnostic actions require a separate run")
+        metadata = dict(metadata, run_id=str(args.diagnostic_run_id))
     status, _ = request("/ready/scoring")
-    if status != 200:
+    if status != (503 if args.diagnostic_run_id else 200):
         raise RuntimeError("Application scoring is not ready")
     token = config["RESULT_API_TOKEN"]
     if args.verify_report:
@@ -153,6 +158,8 @@ def main(argv=None):
         "data": "Three generated label-free fixtures; no reserved-test data",
         "cases": cases,
         "reserved_test_accessed": False,
+        "diagnostic_only": args.diagnostic_run_id is not None,
+        "activation_authorized": False,
         "started_at": datetime.now(UTC).isoformat(),
     }
     output = (

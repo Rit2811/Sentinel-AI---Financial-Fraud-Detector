@@ -257,3 +257,29 @@ test('downgrade refuses v2 audit records without changing data or schema', async
     ).rows[0].merchant_category,
   ).toBe(event.merchant_category)
 })
+
+test('scoring candidate index preserves populated immutable events and is reversible', async () => {
+  const sql = (
+    await readFile(
+      new URL(
+        '../../migrations/0010_scoring-candidate-index.sql',
+        import.meta.url,
+      ),
+      'utf8',
+    )
+  ).split('-- Down Migration')
+  const before = await snapshot()
+  await migrate(sql[0])
+  expect(await snapshot()).toEqual(before)
+  const index = (
+    await client.query(
+      'SELECT indexdef FROM pg_indexes WHERE schemaname=$1 AND indexname=$2',
+      [schema, 'authorization_events_scoring_order_idx'],
+    )
+  ).rows[0]
+  expect(index.indexdef).toContain('(created_at, event_id)')
+  expect(index.indexdef).toContain('schema_version')
+  expect(index.indexdef).toContain('2.0')
+  await migrate(sql[1])
+  expect(await snapshot()).toEqual(before)
+})

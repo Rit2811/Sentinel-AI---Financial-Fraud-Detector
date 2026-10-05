@@ -1,6 +1,7 @@
 # Optional worker clients must be checked before importing the worker module.
 # ruff: noqa: E402
 import copy
+import concurrent.futures
 import json
 import os
 import subprocess
@@ -38,6 +39,320 @@ class FixtureScorer:
             ]
         )
         return p, np.where(p < self.r, "Pass", np.where(p < self.b, "Review", "Block"))
+
+
+def test_publisher_crash_replay_preserves_worker_history_decisions_and_actions(harness):
+    worker, _ = harness
+    # Clear unrelated pending fixture work only after the strict fixture guard.
+    guard_fixture_urls(os.environ["TEST_DATABASE_URL"], os.environ["TEST_REDIS_URL"])
+    worker.db.execute(
+        "UPDATE authorization_event_outbox SET status='dead_letter' WHERE status IN ('pending','publishing')"
+    )
+    backend = Path(__file__).resolve().parents[3] / "backend"
+    config = dict(
+        name=worker.stream, batchSize=4, claimIdleMs=0, maxAttempts=5, retention=100
+    )
+    env = dict(
+        os.environ,
+        CRASH_STREAM_CONFIG=json.dumps(config),
+        CRASH_STDOUT_BOUNDARY="1",
+        CRASH_STDIN_START="1",
+    )
+    child = subprocess.Popen(
+        ["node", "tests/publisherCrashChild.js"],
+        cwd=backend,
+        env=env,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    code = """import pg from 'pg';import{createClient}from'redis';
+import{publishOutboxBatch}from'./src/stream/publisherWorker.js';
+import{assertTestDatabase,requireTestDatabaseUrl,requireTestRedisUrl}from'./tests/databaseSafety.js';
+const pool=new pg.Pool({connectionString:requireTestDatabaseUrl(process.env.TEST_DATABASE_URL)});
+await assertTestDatabase(pool);
+const redis=createClient({url:requireTestRedisUrl(process.env.TEST_REDIS_URL),socket:{reconnectStrategy:false}});
+redis.on('error',()=>{});await redis.connect();
+console.log('publisher_ready');await new Promise(resolve=>process.stdin.once('data',resolve));
+await publishOutboxBatch({pool,redis,streamConfig:JSON.parse(process.env.CRASH_STREAM_CONFIG),log:{info(){},error(){}}});
+redis.destroy();await pool.end();"""
+    replacement = subprocess.Popen(
+        ["node", "--input-type=module", "-e", code],
+        cwd=backend,
+        env=env,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    reader = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+    try:
+        for publisher in (child, replacement):
+            assert (
+                reader.submit(publisher.stdout.readline).result(timeout=20).strip()
+                == "publisher_ready"
+            )
+        # Independent publishers are ready before acceptance, just as in load
+        # tests. Kill the active one and recover through the waiting replacement.
+        events = [
+            enqueue(worker, offset=i, amount=amount)[0]
+            for i, amount in enumerate((1234, 2500, 3500))
+        ]
+        worker.redis.delete(worker.stream)
+        worker.db.execute(
+            "UPDATE authorization_event_outbox SET status='pending',published_at=NULL,stream_message_id=NULL WHERE event_id=ANY(%s::uuid[])",
+            ([event["event_id"] for event in events],),
+        )
+        child.stdin.write("start\n")
+        child.stdin.flush()
+        assert (
+            reader.submit(child.stdout.readline).result(timeout=5).strip()
+            == "before_commit"
+        )
+        child.kill()
+        child.communicate(timeout=5)
+        replacement.stdin.write("recover\n")
+        replacement.stdin.flush()
+        _, stderr = replacement.communicate(timeout=5)
+        assert replacement.returncode == 0, stderr
+    finally:
+        for publisher in (child, replacement):
+            if publisher.poll() is None:
+                publisher.kill()
+                publisher.communicate(timeout=5)
+        reader.shutdown(wait=True)
+    delivered = [
+        json.loads(fields["envelope"])["event_id"]
+        for _, fields in worker.redis.xrange(worker.stream)
+    ]
+    assert delivered == [event["event_id"] for event in events] * 2
+    worker.cycle()
+    worker.cycle()
+    offline = FeatureStream()
+    for event in events:
+        assert state(worker, event)["status"] == "scored"
+        stored = worker.db.execute(
+            "SELECT * FROM scoring_feature_snapshots WHERE run_id=%s AND event_id=%s",
+            (worker.run_id, event["event_id"]),
+        ).fetchone()
+        assert {k: stored[k] for k in FEATURE_ORDER} == offline.transform(event)
+    for table in (
+        "scoring_history",
+        "scoring_feature_snapshots",
+        "scoring_predictions",
+        "scoring_results",
+        "simulated_executions",
+    ):
+        assert (
+            worker.db.execute(
+                f"SELECT count(*) AS n FROM {table} WHERE run_id=%s", (worker.run_id,)
+            ).fetchone()["n"]
+            == 3
+        )
+    assert {
+        row["state"]
+        for row in worker.db.execute(
+            "SELECT state FROM simulated_executions WHERE run_id=%s", (worker.run_id,)
+        )
+    } == {"allowed", "pending_review", "rejected"}
+
+
+def test_first_inference_checkpoint_is_atomic_with_private_prediction(
+    harness, monkeypatch
+):
+    worker, _ = harness
+    event, _, _ = enqueue(worker)
+    event_id = event["event_id"]
+    original = worker.scorer.score
+    observed = []
+
+    def score(features):
+        assert worker.db.info.transaction_status == psycopg.pq.TransactionStatus.INTRANS
+        with psycopg.connect(
+            os.environ["TEST_DATABASE_URL"], row_factory=dict_row
+        ) as peer:
+            job = peer.execute(
+                "SELECT status,attempts FROM scoring_jobs WHERE run_id=%s AND event_id=%s",
+                (worker.run_id, event_id),
+            ).fetchone()
+            assert job is None
+            for table in ("scoring_history", "scoring_feature_snapshots"):
+                assert (
+                    peer.execute(
+                        f"SELECT count(*) AS n FROM {table} WHERE run_id=%s AND event_id=%s",
+                        (worker.run_id, event_id),
+                    ).fetchone()["n"]
+                    == 0
+                )
+        observed.append(features)
+        return original(features)
+
+    monkeypatch.setattr(worker.scorer, "score", score)
+    monkeypatch.setattr(
+        worker,
+        "prepare_pending",
+        lambda _: pytest.fail("New published jobs need no second preparation commit"),
+    )
+    worker.drain()
+    assert len(observed) == 1
+    assert state(worker, event)["status"] == "scored"
+    with psycopg.connect(os.environ["TEST_DATABASE_URL"], row_factory=dict_row) as peer:
+        for table in (
+            "scoring_history",
+            "scoring_feature_snapshots",
+            "scoring_predictions",
+        ):
+            assert (
+                peer.execute(
+                    f"SELECT count(*) AS n FROM {table} WHERE run_id=%s AND event_id=%s",
+                    (worker.run_id, event_id),
+                ).fetchone()["n"]
+                == 1
+            )
+    worker.drain()
+    assert len(observed) == 1
+
+
+def test_first_preparation_failure_rolls_back_checkpoint(harness):
+    worker, _ = harness
+    event, _, _ = enqueue(worker)
+    event_id = event["event_id"]
+    name = "reject_prepare_" + uuid4().hex
+    worker.db.execute("""CREATE FUNCTION pg_temp.reject_first_prepare() RETURNS trigger
+        LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'first preparation rejected'; END $$""")
+    worker.db.execute(f"""CREATE TRIGGER {name} BEFORE UPDATE ON scoring_jobs
+        FOR EACH ROW WHEN (NEW.run_id='{worker.run_id}'::uuid AND NEW.status='scoring')
+        EXECUTE FUNCTION pg_temp.reject_first_prepare()""")
+    try:
+        with pytest.raises(
+            psycopg.errors.RaiseException, match="first preparation rejected"
+        ):
+            worker.drain()
+        for table in (
+            "scoring_jobs",
+            "scoring_history",
+            "scoring_feature_snapshots",
+            "simulated_executions",
+        ):
+            assert (
+                worker.db.execute(
+                    f"SELECT count(*) AS n FROM {table} WHERE run_id=%s AND event_id=%s",
+                    (worker.run_id, event_id),
+                ).fetchone()["n"]
+                == 0
+            )
+    finally:
+        worker.db.execute(f"DROP TRIGGER {name} ON scoring_jobs")
+    worker.drain()
+    for table in ("scoring_jobs", "scoring_history", "scoring_feature_snapshots"):
+        assert (
+            worker.db.execute(
+                f"SELECT count(*) AS n FROM {table} WHERE run_id=%s AND event_id=%s",
+                (worker.run_id, event_id),
+            ).fetchone()["n"]
+            == 1
+        )
+
+
+def test_combined_commit_failure_rolls_back_history_and_prediction(harness):
+    worker, _ = harness
+    event, _, _ = enqueue(worker)
+    name = "reject_combined_" + uuid4().hex
+    worker.db.execute("""CREATE FUNCTION pg_temp.reject_combined_commit() RETURNS trigger
+        LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'combined commit rejected'; END $$""")
+    worker.db.execute(f"""CREATE CONSTRAINT TRIGGER {name} AFTER INSERT ON scoring_predictions
+        DEFERRABLE INITIALLY DEFERRED FOR EACH ROW WHEN (NEW.run_id='{worker.run_id}'::uuid)
+        EXECUTE FUNCTION pg_temp.reject_combined_commit()""")
+    try:
+        with pytest.raises(
+            psycopg.errors.RaiseException, match="combined commit rejected"
+        ):
+            worker.drain()
+        for table in (
+            "scoring_jobs",
+            "scoring_history",
+            "scoring_feature_snapshots",
+            "scoring_predictions",
+            "scoring_results",
+            "simulated_executions",
+        ):
+            assert (
+                worker.db.execute(
+                    f"SELECT count(*) AS n FROM {table} WHERE run_id=%s AND event_id=%s",
+                    (worker.run_id, event["event_id"]),
+                ).fetchone()["n"]
+                == 0
+            )
+    finally:
+        worker.db.execute(f"DROP TRIGGER {name} ON scoring_predictions")
+    worker.cycle()
+    assert state(worker, event)["status"] == "scored"
+    for table in ("scoring_history", "scoring_predictions", "simulated_executions"):
+        assert (
+            worker.db.execute(
+                f"SELECT count(*) AS n FROM {table} WHERE run_id=%s AND event_id=%s",
+                (worker.run_id, event["event_id"]),
+            ).fetchone()["n"]
+            == 1
+        )
+
+
+def test_batch_predictions_are_committed_before_execution(harness, monkeypatch):
+    worker, _ = harness
+    events = [enqueue(worker, offset=i)[0] for i in range(2)]
+    original = worker.finalize_batch
+    witnessed = []
+
+    def finalize(event_ids):
+        with psycopg.connect(
+            os.environ["TEST_DATABASE_URL"], row_factory=dict_row
+        ) as peer:
+            rows = peer.execute(
+                "SELECT event_id,xmin::text AS xid FROM scoring_predictions WHERE run_id=%s",
+                (worker.run_id,),
+            ).fetchall()
+            assert len(rows) == 2
+            assert len({row["xid"] for row in rows}) == 1
+            assert {str(row["event_id"]) for row in rows} == {
+                event["event_id"] for event in events
+            }
+        witnessed.extend(event_ids)
+        original(event_ids)
+
+    monkeypatch.setattr(worker, "finalize_batch", finalize)
+    worker.drain()
+    assert len(witnessed) == 2
+    for event in events:
+        assert state(worker, event)["status"] == "scored"
+
+
+def test_delayed_batch_prediction_commit_cannot_execute(harness):
+    worker, _ = harness
+    name = "delay_batch_" + uuid4().hex
+    worker.db.execute("""CREATE FUNCTION pg_temp.delay_batch_commit() RETURNS trigger
+        LANGUAGE plpgsql AS $$ BEGIN PERFORM pg_sleep(1.1); RETURN NULL; END $$""")
+    worker.db.execute(f"""CREATE CONSTRAINT TRIGGER {name} AFTER INSERT ON scoring_predictions
+        DEFERRABLE INITIALLY DEFERRED FOR EACH ROW WHEN (NEW.run_id='{worker.run_id}'::uuid)
+        EXECUTE FUNCTION pg_temp.delay_batch_commit()""")
+    try:
+        events = [enqueue(worker, offset=i)[0] for i in range(2)]
+        worker.drain()
+        assert all(state(worker, event)["status"] == "expired" for event in events)
+        for table, expected in [
+            ("scoring_predictions", 2),
+            ("scoring_results", 0),
+            ("simulated_executions", 0),
+        ]:
+            assert (
+                worker.db.execute(
+                    f"SELECT count(*) AS n FROM {table} WHERE run_id=%s",
+                    (worker.run_id,),
+                ).fetchone()["n"]
+                == expected
+            )
+    finally:
+        worker.db.execute(f"DROP TRIGGER {name} ON scoring_predictions")
 
 
 def test_delayed_prediction_commit_expires_without_execution(harness):
@@ -92,12 +407,15 @@ def test_recovery_reuses_committed_prediction_without_reinference(harness, monke
     )
 
 
-def test_same_transaction_prediction_cannot_execute(harness, monkeypatch):
+@pytest.mark.parametrize("batch", [False, True])
+def test_same_transaction_prediction_cannot_execute(harness, batch):
     worker, _ = harness
     event, _, _ = enqueue(worker)
-    with monkeypatch.context() as patch:
-        patch.setattr(worker, "score_batch", lambda _: None)
-        worker.drain()
+    row = worker.db.execute(
+        "SELECT e.*,o.envelope,e.created_at AS accepted_at FROM authorization_events e JOIN authorization_event_outbox o USING(event_id) WHERE event_id=%s",
+        (event["event_id"],),
+    ).fetchone()
+    worker.assign(row)
     with pytest.raises(psycopg.errors.RaiseException, match="Previously committed"):
         with worker.db.transaction():
             worker.db.execute(
@@ -111,10 +429,13 @@ def test_same_transaction_prediction_cannot_execute(harness, monkeypatch):
                 FROM scoring_jobs WHERE run_id=%s""",
                 (worker.run_id,),
             )
-            worker.db.execute(
-                "INSERT INTO scoring_results SELECT * FROM scoring_predictions WHERE run_id=%s",
-                (worker.run_id,),
-            )
+            if batch:
+                worker.finalize_batch([event["event_id"]])
+            else:
+                worker.db.execute(
+                    "INSERT INTO scoring_results SELECT * FROM scoring_predictions WHERE run_id=%s",
+                    (worker.run_id,),
+                )
     assert (
         worker.db.execute(
             "SELECT count(*) AS n FROM simulated_executions WHERE run_id=%s",
@@ -127,7 +448,7 @@ def test_same_transaction_prediction_cannot_execute(harness, monkeypatch):
 
 
 @pytest.fixture
-def harness():
+def harness(request):
     pg_url, redis_url = os.getenv("TEST_DATABASE_URL"), os.getenv("TEST_REDIS_URL")
     if not pg_url or not redis_url:
         pytest.skip("Explicit isolated PostgreSQL/Redis URLs required")
@@ -140,7 +461,14 @@ def harness():
     )
     run_id, stream = str(uuid4()), f"task6-test:{uuid4()}"
     worker = ScoringWorker(
-        db, transport, FixtureScorer(), run_id, "f" * 64, mode="fixture", stream=stream
+        db,
+        transport,
+        FixtureScorer(),
+        run_id,
+        "f" * 64,
+        mode="fixture",
+        stream=stream,
+        diagnostic_deadline_ms=getattr(request, "param", None),
     )
     try:
         yield worker, pg_url
@@ -148,6 +476,88 @@ def harness():
         if not worker.db.closed:
             worker.close()
         transport.delete(stream)
+
+
+@pytest.mark.parametrize("harness", [2000], indirect=True)
+def test_diagnostic_two_second_run_keeps_identity_and_late_effect_guard(harness):
+    worker, _ = harness
+    event, _, _ = enqueue(worker)
+    time.sleep(1.1)
+    worker.drain()
+    assert state(worker, event)["status"] == "scored"
+    run = worker.db.execute(
+        "SELECT deadline_ms,diagnostic_only FROM scoring_runs WHERE run_id=%s",
+        (worker.run_id,),
+    ).fetchone()
+    assert run == {"deadline_ms": 2000, "diagnostic_only": True}
+    job = state(worker, event)
+    assert (job["deadline_at"] - job["created_at"]).total_seconds() == 2
+    late, _, _ = enqueue(worker, offset=1)
+    time.sleep(2.1)
+    worker.drain()
+    assert state(worker, late)["status"] == "expired"
+    assert (
+        worker.db.execute(
+            "SELECT count(*) AS n FROM simulated_executions WHERE run_id=%s AND event_id=%s",
+            (worker.run_id, late["event_id"]),
+        ).fetchone()["n"]
+        == 0
+    )
+    worker.drain()
+    assert (
+        worker.db.execute(
+            "SELECT count(*) AS n FROM scoring_history WHERE run_id=%s",
+            (worker.run_id,),
+        ).fetchone()["n"]
+        == 2
+    )
+
+
+def test_regular_run_cannot_take_two_second_deadline(harness):
+    worker, _ = harness
+    with pytest.raises(psycopg.errors.CheckViolation):
+        worker.db.execute(
+            "INSERT INTO scoring_runs(run_id,mode,bundle_sha256,policy_version,feature_version,deadline_ms) VALUES (%s,'fixture',%s,'FIXTURE_POLICY','sparkov-pit-v1',2000)",
+            (str(uuid4()), "f" * 64),
+        )
+
+
+@pytest.mark.parametrize("harness", [2000], indirect=True)
+def test_diagnostic_job_cannot_change_run_deadline(harness):
+    worker, _ = harness
+    event, _, _ = enqueue(worker)
+    row = worker.db.execute(
+        "SELECT e.*,o.envelope,e.created_at AS accepted_at FROM authorization_events e JOIN authorization_event_outbox o USING(event_id) WHERE event_id=%s",
+        (event["event_id"],),
+    ).fetchone()
+    worker.deadline_ms = 1000
+    with pytest.raises(psycopg.errors.RaiseException, match="Diagnostic deadline"):
+        worker.assign(row)
+    worker.deadline_ms = 2000
+    worker.assign(row)
+    assert (
+        state(worker, event)["deadline_at"] - state(worker, event)["created_at"]
+    ).total_seconds() == 2
+
+
+@pytest.mark.parametrize("harness", [2000], indirect=True)
+def test_diagnostic_run_cannot_restart_as_approved_regular_run(harness):
+    worker, url = harness
+    worker.close()
+    db = psycopg.connect(url, autocommit=True, row_factory=dict_row)
+    try:
+        with pytest.raises(ValueError, match="identity cannot change"):
+            ScoringWorker(
+                db,
+                worker.redis,
+                FixtureScorer(),
+                worker.run_id,
+                worker.package_pin,
+                mode="fixture",
+                stream=worker.stream,
+            )
+    finally:
+        db.close()
 
 
 def enqueue(worker, offset=0, amount=1234, card="a" * 64):
@@ -260,7 +670,13 @@ def test_unpublished_job_still_expires_durably(harness):
         "UPDATE authorization_event_outbox SET status='pending' WHERE event_id=%s",
         (event["event_id"],),
     )
-    assert worker.drain() == 1
+    assert worker.drain() == 0
+    assert (
+        worker.db.execute(
+            "SELECT count(*) AS n FROM scoring_jobs WHERE run_id=%s", (worker.run_id,)
+        ).fetchone()["n"]
+        == 0
+    )
     assert worker.drain() == 0
     time.sleep(1.05)
     assert worker.drain() == 1
@@ -275,6 +691,98 @@ def test_unpublished_job_still_expires_durably(harness):
     )
 
 
+def test_unpublished_predecessor_cannot_be_overtaken(harness):
+    worker, _ = harness
+    first, _, _ = enqueue(worker)
+    second, _, _ = enqueue(worker, offset=1)
+    worker.db.execute(
+        "UPDATE authorization_event_outbox SET status='pending' WHERE event_id=%s",
+        (first["event_id"],),
+    )
+    assert worker.drain() == 0
+    worker.db.execute(
+        "UPDATE authorization_event_outbox SET status='published' WHERE event_id=%s",
+        (first["event_id"],),
+    )
+    assert worker.drain() == 2
+    offline = FeatureStream()
+    for event in (first, second):
+        row = worker.db.execute(
+            "SELECT * FROM scoring_feature_snapshots WHERE run_id=%s AND event_id=%s",
+            (worker.run_id, event["event_id"]),
+        ).fetchone()
+        assert {key: row[key] for key in FEATURE_ORDER} == offline.transform(event)
+
+
+def test_delivery_batch_ack_loss_preserves_durable_audits(harness, monkeypatch):
+    worker, url = harness
+    for _ in range(2):
+        worker.redis.xadd(worker.stream, {"envelope": "invalid"})
+    messages = worker.redis.xreadgroup(
+        worker.group, "batch-recovery", {worker.stream: ">"}, count=2
+    )[0][1]
+    original = worker.redis.xack
+
+    def lose_ack(*_):
+        with psycopg.connect(url, row_factory=dict_row) as peer:
+            assert (
+                peer.execute(
+                    "SELECT count(*) AS n FROM scoring_delivery_failures WHERE run_id=%s",
+                    (worker.run_id,),
+                ).fetchone()["n"]
+                == 2
+            )
+        raise redis.ConnectionError("lost acknowledgement")
+
+    monkeypatch.setattr(worker.redis, "xack", lose_ack)
+    with pytest.raises(redis.ConnectionError):
+        worker.delivery_batch(messages)
+    assert worker.redis.xpending(worker.stream, worker.group)["pending"] == 2
+    monkeypatch.setattr(worker.redis, "xack", original)
+    worker.delivery_batch(messages)
+    assert worker.redis.xpending(worker.stream, worker.group)["pending"] == 0
+    assert (
+        worker.db.execute(
+            "SELECT count(*) AS n FROM scoring_delivery_failures WHERE run_id=%s",
+            (worker.run_id,),
+        ).fetchone()["n"]
+        == 2
+    )
+
+
+def test_delivery_batch_failed_commit_never_acknowledges(harness, monkeypatch):
+    worker, _ = harness
+    name = "batch_commit_" + uuid4().hex
+    worker.db.execute(
+        f"CREATE FUNCTION {name}() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'audit commit rejected'; END $$"
+    )
+    worker.db.execute(
+        f"CREATE CONSTRAINT TRIGGER {name} AFTER INSERT ON scoring_delivery_failures DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION {name}()"
+    )
+    monkeypatch.setattr(
+        worker.redis,
+        "xack",
+        lambda *_: pytest.fail("Failed audit commit must not acknowledge"),
+    )
+    try:
+        with pytest.raises(
+            psycopg.errors.RaiseException, match="audit commit rejected"
+        ):
+            worker.delivery_batch(
+                [("1-0", {"envelope": "invalid"}), ("2-0", {"envelope": "invalid"})]
+            )
+        assert (
+            worker.db.execute(
+                "SELECT count(*) AS n FROM scoring_delivery_failures WHERE run_id=%s",
+                (worker.run_id,),
+            ).fetchone()["n"]
+            == 0
+        )
+    finally:
+        worker.db.execute(f"DROP TRIGGER {name} ON scoring_delivery_failures")
+        worker.db.execute(f"DROP FUNCTION {name}()")
+
+
 def test_application_gate_requires_authorization_without_test_access(tmp_path):
     with pytest.raises(ValueError, match="final-test"):
         verify_activation(None, None, PIN, {})
@@ -282,6 +790,28 @@ def test_application_gate_requires_authorization_without_test_access(tmp_path):
     file.write_text('{"status":"PASS"}')
     with pytest.raises(ValueError):
         verify_activation(file, "0" * 64, PIN, {})
+
+
+def test_startup_stream_recovery_precedes_readiness(harness):
+    worker, _ = harness
+    for _ in range(120):
+        worker.redis.xadd(worker.stream, {"envelope": "invalid"})
+    for expected in (50, 100, 120):
+        worker._ready_heartbeat_at = 0
+        worker.cycle()
+        row = worker.db.execute(
+            "SELECT ready,error_code FROM scoring_worker_health WHERE run_id=%s",
+            (worker.run_id,),
+        ).fetchone()
+        assert row["ready"] is (expected == 120)
+        assert (
+            worker.db.execute(
+                "SELECT count(*) AS n FROM scoring_delivery_failures WHERE run_id=%s",
+                (worker.run_id,),
+            ).fetchone()["n"]
+            == expected
+        )
+    assert worker.redis.xpending(worker.stream, worker.group)["pending"] == 0
 
 
 def test_fixture_guard_rejects_application_target():

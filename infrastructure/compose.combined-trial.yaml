@@ -1,0 +1,4 @@
+# Adds only the tested worker image to the authorized two-second diagnostic overlay.
+services:
+  scoring-worker:
+    image: sentinel-ai-scoring-worker:task6-combined-commit

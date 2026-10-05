@@ -17,7 +17,8 @@ from .worker import verify_activation
 def check_workload(path, package_pin, tps, minimum_seconds):
     report = json.loads(path.read_text(encoding="utf-8"))
     if (
-        report.get("bundle_sha256") != package_pin
+        report.get("diagnostic_only") is True
+        or report.get("bundle_sha256") != package_pin
         or report.get("tps") != tps
         or report.get("requested_seconds", 0) < minimum_seconds
         or report.get("offered_transactions_per_second", 0) < tps * 0.99
