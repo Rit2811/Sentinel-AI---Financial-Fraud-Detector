@@ -1,6 +1,10 @@
-# Task 6 Connected Worker
+# Connected Scoring Worker
 
-Current verification is in `task-6-verification-record.md`. Application migrations
+Latest deployment/gates: [Mumbai deployment](mumbai-deployment.md). Cloud migration
+and backup restore passed. Workload acceptance and final activation remain pending;
+writers are paused after renewed clock drift. Older checkpoints below are historical.
+
+Current verification is in `scoring-verification.md`. Application migrations
 and backup restore are verified. The worker's 20 connected checks pass; sustained
 peak deadline acceptance still fails under observed host resource pressure.
 The preparation/history notes below are retained as earlier checkpoints.
@@ -85,7 +89,7 @@ SHA-256: `9e241a1a150e6d716d09ef467ce42762f6aa57040db24616cbece96720cc8774`.
 The dump command completed, but its isolated restore verification was interrupted
 by Docker errors. Do not call this backup recovery-verified yet. The older empty
 baseline backup and its successful restore remain documented in
-`task-6-execution-and-recovery.md`.
+`scoring-execution-recovery.md`.
 
 The owner reported changing Docker's RAM limit from 2 GB to 1 GB and restoring
 it to 2 GB. During this transition the daemon returned 500/502 errors and empty

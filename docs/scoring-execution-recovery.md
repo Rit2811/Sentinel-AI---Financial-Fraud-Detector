@@ -1,7 +1,7 @@
 # Execution and Database Evidence
 
 Historical migration-0006 checkpoint, not the current deployment status.
-See `task-6-verification-record.md` for the implemented worker, applied
+See `scoring-verification.md` for the implemented worker, applied
 migrations 0001-0009, restored backups and remaining workload/activation gates.
 Task 5's authorized test now passed;
 `task-5-final-test-record.md` contains its unchanged-package evidence.
@@ -84,7 +84,7 @@ unique constraints serialize concurrent resolutions. If COMMIT response is lost,
 retry with the SAME resolution ID/body; storage is checked before another effect.
 GET result exposes original model evidence, current execution state, authenticated
 reviewer identity, resolution notes and timestamps separately. See OpenAPI and
-`task-6-requests.http`.
+`transaction-replay.http`.
 
 ## Verification and Remaining Work
 

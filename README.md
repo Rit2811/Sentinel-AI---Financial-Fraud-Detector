@@ -4,6 +4,10 @@ Sentinel AI is a local prototype for receiving synthetic financial authorization
 
 The active dataset is Sparkov-derived `kartik2112/fraud-detection/versions/1`. This is not a production payment system. Task 5's frozen Random Forest passed its authorized final test. Task 6's connected worker is implemented, but application activation and full workload acceptance remain pending.
 
+The application database is now migrated to Supabase Mumbai, with source databases
+preserved and a verified restore. Activation is still blocked by workload gates;
+writers are paused after renewed clock drift. See [current deployment evidence](docs/mumbai-deployment.md).
+
 ## What is implemented
 
 - A Node.js and Express API for validated, idempotent authorization-event ingestion.
@@ -37,7 +41,11 @@ Docker Compose runs six processes:
 5. `consumer` processes stream messages and records deduplicated receipts.
 6. `web` serves the compiled dashboard through Nginx and proxies API requests.
 
-The optional `scoring-worker` Compose profile adds Python inference. Application activation is gated by the frozen package, passing model evaluation and zero-expiry workload evidence; ordinary `make up` does not authorize scoring. See `docs/task-6-verification-record.md` for the current deployment status.
+The optional `scoring-worker` Compose profile adds Python inference. Application activation is gated by the frozen package, passing model evaluation and zero-expiry workload evidence; ordinary `make up` does not authorize scoring. See `docs/scoring-verification.md` for the current deployment status.
+
+Runtime names describe their purpose: API images use `local`/`supabase`, worker
+images use `replay`/`supabase`, and private settings use `.env.application.local`.
+See `docs/component-naming.md` for the naming map and protected rollback aliases.
 
 ## Requirements
 
@@ -97,7 +105,7 @@ Datasets, credentials, reports, and model artifacts are intentionally ignored by
 - No concept-drift monitoring or automated retraining.
 - No production deployment, compliance approval, or real card-data processing.
 
-Task 4 gates passed on 2026-10-01. Task 5 passed on 2026-10-02: approved sigmoid RF (Review 0.10, Block 0.25), frozen package, clean-load parity and one authorized reserved-test evaluation without tuning. The actual application database has migrations 0001-0009 with verified isolated backup restoration. Task 6 still needs zero-expiry peak-load evidence followed by actual application activation/action/restart verification. See `docs/task-5-final-test-record.md` and `docs/task-6-verification-record.md` for current evidence; earlier planning documents are historical checkpoints. Task 7 is not started or precisely specified by the supplied Task 5/6 guides.
+Task 4 gates passed on 2026-10-01. Task 5 passed on 2026-10-02: approved sigmoid RF (Review 0.10, Block 0.25), frozen package, clean-load parity and one authorized reserved-test evaluation without tuning. The actual application database has migrations 0001-0009 with verified isolated backup restoration. Task 6 still needs zero-expiry peak-load evidence followed by actual application activation/action/restart verification. See `docs/task-5-final-test-record.md` and `docs/scoring-verification.md` for current evidence; earlier planning documents are historical checkpoints. Task 7 is not started or precisely specified by the supplied Task 5/6 guides.
 
 ## Data safety
 

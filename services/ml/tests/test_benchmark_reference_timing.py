@@ -100,7 +100,7 @@ def test_manifest_checked_before_traffic_but_reference_model_loaded_after_termin
             "--run-id",
             run_id,
             "--base",
-            f"http://task6-fixture-api-{run_id}:8000",
+            f"http://sentinel-load-api-{run_id}:8000",
             "--tps",
             "1",
             "--seconds",

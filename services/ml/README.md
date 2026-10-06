@@ -88,4 +88,4 @@ isolated label-free load harness is `python -m fraud_ml.worker_benchmark`.
 Install worker clients with `uv sync --extra worker`. Both require exact frozen
 package pins. Application mode additionally verifies a pinned passing final-test
 report. Task 6 remains incomplete and application scoring is not active; read
-`../../docs/task-6-worker-status.md` before running either command.
+`../../docs/scoring-worker-status.md` before running either command.

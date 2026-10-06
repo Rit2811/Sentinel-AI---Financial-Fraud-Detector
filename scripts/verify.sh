@@ -3,7 +3,7 @@ set -euo pipefail
 
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 COMPOSE=(docker compose -f "$ROOT/infrastructure/compose.yaml")
-TEST_COMPOSE=(docker compose -p sentinel-task4-test -f "$ROOT/infrastructure/compose.test.yaml")
+TEST_COMPOSE=(docker compose -p sentinel-test -f "$ROOT/infrastructure/compose.test.yaml")
 TEST_COMPOSE_STARTED=false
 
 cleanup() {

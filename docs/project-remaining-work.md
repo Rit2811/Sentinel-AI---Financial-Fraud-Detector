@@ -1,5 +1,12 @@
 # Remaining Project Work
 
+LATEST: [Mumbai deployment](mumbai-deployment.md) supersedes the deployment notes
+below. Migration and full backup restoration passed; one-second peak acceptance
+has NOT passed. Writers are stopped after renewed measured clock drift. Restore
+stable clock sync, verify short checks, then BOTH ten-minute actual 1/5 TPS tests
+and final qualified-deployment actions/review/readiness/recovery. Activation held.
+The following local-storage checkpoint and older metrics are HISTORICAL.
+
 Latest evidence: [storage and pipeline correction](storage-and-pipeline-correction.md).
 The final candidate passed actual one-second 1 TPS/600s with 600/600 scored.
 Paced 5 TPS/60s still failed with six expiries out of 300; full peak remains
@@ -54,7 +61,7 @@ actual persistent-database peak acceptance failed.
    stopped. Earlier passing isolated tmpfs peak evidence
    does not establish application disk performance.
 
-Current evidence and performance limitations are in [the verification record](task-6-verification-record.md).
+Current evidence and performance limitations are in [the verification record](scoring-verification.md).
 Existing owner approvals are sufficient; these are engineering/evidence gaps.
 
 The separately authorized two-second diagnostic trial is recorded in

@@ -1,6 +1,7 @@
 import pytest
 
 from fraud_ml.connected_benchmark import (
+    clocks_consistent,
     paced_due,
     generated_event,
     guard_application_urls,
@@ -8,12 +9,22 @@ from fraud_ml.connected_benchmark import (
     main,
 )
 from fraud_ml.features import FeatureStream
+from fraud_ml.database import database_target_sha256
 
 
 def test_pacing_never_catches_up_after_a_slow_slot():
     assert paced_due(100, 0, 5, None) == 100
     assert paced_due(100, 1, 5, 100) == 100.2
     assert paced_due(100, 2, 5, 101) == 101.2
+
+
+def test_clock_check_accounts_for_network_uncertainty_without_correcting_time():
+    assert clocks_consistent([{"midpoint_offset_ms": 30, "uncertainty_ms": 20}])
+    for offset in (-460, 460):
+        assert not clocks_consistent(
+            [{"midpoint_offset_ms": offset, "uncertainty_ms": 20}]
+        )
+    assert not clocks_consistent([])
 
 
 def test_docker_workload_uses_only_the_shared_label_free_contract():
@@ -88,6 +99,22 @@ def test_application_guard_allows_only_confirmed_target():
         "postgresql://127.0.0.1:15432/sentinel",
         "redis://127.0.0.1:16379/0",
     )
+
+
+def test_cloud_controller_requires_pin_verified_tls_and_original_redis():
+    pg = "postgresql://postgres.example:placeholder@aws-0-example.pooler.supabase.com:5432/postgres?sslmode=verify-full&sslrootcert=/run/secrets/supabase-root.crt"
+    rd = "redis://redis:6379/0"
+    pin = database_target_sha256(pg)
+    guard_application_urls(pg, rd, True, pin)
+    for url, redis, docker, target in (
+        (pg, rd, True, "f" * 64),
+        (pg, rd, False, pin),
+        (pg.replace("verify-full", "require"), rd, True, pin),
+        (pg, "redis://other:6379/0", True, pin),
+        (pg.replace("postgres.example", "postgres.other"), rd, True, pin),
+    ):
+        with pytest.raises(ValueError):
+            guard_application_urls(url, redis, docker, target)
 
 
 def test_docker_application_target_is_explicit_and_not_an_isolated_alias():

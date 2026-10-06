@@ -10,6 +10,11 @@ from datetime import UTC, datetime
 from pathlib import Path
 from uuid import UUID, uuid4
 
+from urllib.parse import parse_qs, urlsplit
+
+from .database import database_target_sha256
+from .runtime import application_environment
+
 from .serving import sha256
 from .worker_benchmark import keep_host_awake, profile_summary
 
@@ -18,6 +23,45 @@ def inspect_container(name):
     return json.loads(subprocess.check_output(["docker", "inspect", name], text=True))[
         0
     ]
+
+
+def verify_external_target(details, expected, certificate):
+    for detail in details:
+        env = dict(
+            value.split("=", 1) for value in detail["Config"]["Env"] if "=" in value
+        )
+        url = env.get("POSTGRES_URL", "")
+        try:
+            parsed = urlsplit(url)
+            query = parse_qs(parsed.query)
+            valid = (parsed.hostname or "").endswith(
+                ".pooler.supabase.com"
+            ) and parsed.port == 5432
+            valid = valid and database_target_sha256(url) == expected
+        except ValueError:
+            raise ValueError("Invalid external database configuration") from None
+        if not valid or env.get("DATABASE_URL") != url:
+            raise ValueError(
+                "Application services must share the pinned external database"
+            )
+        root = "/run/secrets/supabase-root.crt"
+        if query.get("sslmode") != ["verify-full"] or query.get("sslrootcert") != [
+            root
+        ]:
+            raise ValueError("External database requires verified TLS URL settings")
+        if env.get("PGSSLROOTCERT") != root or env.get("PGSSLMODE") != "verify-full":
+            raise ValueError("External database TLS environment mismatch")
+        mount = next(
+            (item for item in detail["Mounts"] if item["Destination"] == root), None
+        )
+        if (
+            not mount
+            or mount.get("RW") is not False
+            or sha256(Path(mount["Source"])) != sha256(certificate)
+        ):
+            raise ValueError(
+                "Application services must share the read-only database certificate"
+            )
 
 
 @keep_host_awake()
@@ -40,9 +84,20 @@ def main(argv=None):
     parser.add_argument("--trial-run-id", type=UUID)
     parser.add_argument("--candidate-run-id", type=UUID)
     parser.add_argument("--qualification", action="store_true")
+    parser.add_argument("--external-database-target-sha256")
     args = parser.parse_args(argv)
     deadline_trial = args.diagnostic_deadline_ms is not None
     candidate_measurement = args.diagnostic or args.qualification
+    external = args.external_database_target_sha256
+    if external and (
+        not candidate_measurement
+        or not args.candidate_run_id
+        or deadline_trial
+        or len(external) != 64
+    ):
+        parser.error(
+            "External database requires an explicitly held one-second candidate and target pin"
+        )
     if args.qualification and (
         args.diagnostic or not args.candidate_run_id or deadline_trial
     ):
@@ -63,7 +118,7 @@ def main(argv=None):
         parser.error("Unqualified diagnostic duration must not exceed 60 seconds")
     ml = Path(__file__).resolve().parents[2]
     root = ml.parents[1]
-    environment = root / ".env.task6.local"
+    environment = application_environment(root)
     metadata_path = ml / "artifacts/runtime/application.json"
     metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
     if sha256(environment) != metadata["environment_sha256"]:
@@ -119,6 +174,20 @@ def main(argv=None):
         if "=" in value
     )
     worker_config = inspect_container("sentinel-ai-scoring-worker-1")["Config"]["Env"]
+    certificate = root / "secrets/supabase-root.crt"
+    if external:
+        verify_external_target(
+            [
+                inspect_container(name)
+                for name in (
+                    "sentinel-ai-api-1",
+                    "sentinel-ai-publisher-1",
+                    "sentinel-ai-scoring-worker-1",
+                )
+            ],
+            external,
+            certificate,
+        )
     if args.candidate_run_id and api_config.get("SCORING_ACTIVATION_HOLD") != "1":
         raise ValueError("Candidate measurement requires explicit activation hold")
     profiling = "SCORING_PROFILE=1" in worker_config
@@ -139,15 +208,16 @@ def main(argv=None):
     ):
         raise ValueError("Application API identity differs from private configuration")
     stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
-    output = ml / "reports/task6-application-load" / stamp
+    output = ml / "reports/replay-load" / stamp
     output.mkdir(parents=True, exist_ok=False)
-    name = "task6-application-controller-" + str(uuid4())
+    name = "sentinel-replay-client-" + str(uuid4())
     temporary_env = ml / "artifacts/runtime" / (name + ".env")
     diagnostic_metadata = ml / "artifacts/runtime" / (name + ".json")
     if candidate_measurement:
         with diagnostic_metadata.open("x", encoding="utf-8") as stream:
             json.dump(metadata, stream)
     values = {
+        "PGOPTIONS": "-c extra_float_digits=3",
         "POSTGRES_URL": api_config["POSTGRES_URL"],
         "REDIS_URL": api_config["REDIS_URL"],
         "RESULT_API_TOKEN": config["RESULT_API_TOKEN"],
@@ -173,12 +243,19 @@ def main(argv=None):
         "--network",
         "sentinel-ai_default",
         "--label",
-        "sentinel.task6.application-controller=true",
+        "sentinel.role=replay-load-client",
         "--entrypoint",
         "/app/.venv/bin/python",
         "--env-file",
         str(temporary_env),
     ]
+    if external:
+        command.extend(
+            [
+                "--mount",
+                f"type=bind,source={certificate.resolve()},target=/run/secrets/supabase-root.crt,readonly",
+            ]
+        )
     for source, target in [
         (Path(config["SCORING_BUNDLE_DIR"]), "/model"),
         (
@@ -219,6 +296,8 @@ def main(argv=None):
     )
     if candidate_measurement:
         command.append("--profile-database-waits")
+    if external:
+        command.extend(["--external-database-target-sha256", external])
     if deadline_trial:
         command.extend(["--diagnostic-deadline-ms", "2000"])
     try:
@@ -246,6 +325,12 @@ def main(argv=None):
         report["activation_authorized"] = False
         report["original_one_second_requirement_unmet"] = True
         report["original_application_run_id"] = original_run_id
+        if external:
+            report["database_target_sha256"] = external
+            report["database_ca_sha256"] = sha256(certificate)
+            report["database_layout"] = (
+                "Supabase Session pooler; original local volume retained for rollback only"
+            )
         report["environment"]["stage_profiling"] = profiling
         if profiling:
             log = output / "worker-profile.log"
@@ -266,6 +351,18 @@ def main(argv=None):
             log.write_text(logs.stdout + logs.stderr, encoding="utf-8")
             report["worker_stage_profile"] = profile_summary(log)
         publisher = inspect_container("sentinel-ai-publisher-1")
+        publisher_config = dict(
+            value.split("=", 1) for value in publisher["Config"]["Env"] if "=" in value
+        )
+        scorer_config = dict(
+            value.split("=", 1) for value in worker_config if "=" in value
+        )
+        report["pipeline_configuration"] = {
+            "scoring_sessions": scorer_config.get("SCORING_CONCURRENCY", "1"),
+            "api_pool_max": api_config.get("POSTGRES_POOL_MAX", "10"),
+            "api_pool_min": api_config.get("POSTGRES_POOL_MIN", "0"),
+            "publisher_batch_size": publisher_config.get("STREAM_BATCH_SIZE"),
+        }
         if api_config.get("INGESTION_PROFILE") == "1":
             log = output / "ingestion-profile.log"
             since = (

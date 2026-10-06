@@ -68,7 +68,18 @@ terminal failure evidence, not successful delivery or fraud labels.
 
 ## Verification
 
-See `task-6-verification-record.md` for exact test/image/report evidence. Short
+Supabase deployment correction (2026-10-05): after rollback, release the borrowed
+publication connection before failure-record CAS acquires another. This preserves
+the recovery protocol and prevents a max=1 pool from waiting on itself. Unknown
+publication COMMIT still invalidates the connection; CAS cannot overwrite a
+concurrent successful publication. The cloud override uses a one-row bounded
+batch because measured remote outcome acknowledgement consumed most of the
+unchanged 200ms publication budget. No scoring deadline/durability change.
+One-connection Redis failure/uncertain acceptance tests and the complete 49-test
+backend integration suite passed. See supabase-database-migration.md for actual
+cloud expiry/recovery evidence and the outstanding clock/performance gate.
+
+See `scoring-verification.md` for exact test/image/report evidence. Short
 unqualified-image diagnostics are marked `diagnostic_only`; the runtime gate
 rejects them regardless of their rate/outcome. Activation still requires exact
 qualified images, controlled normal traffic and a full ten-minute 5 TPS workload

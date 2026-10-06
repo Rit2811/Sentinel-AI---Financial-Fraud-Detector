@@ -22,7 +22,7 @@ function Invoke-Compose {
 
 function Invoke-TestCompose {
     param([Parameter(ValueFromRemainingArguments)] [string[]] $Arguments)
-    Invoke-Checked docker compose -p sentinel-task4-test -f $TestComposeFile @Arguments
+    Invoke-Checked docker compose -p sentinel-test -f $TestComposeFile @Arguments
 }
 
 try {
@@ -201,7 +201,7 @@ try {
 }
 finally {
     if ($TestComposeStarted) {
-        & docker compose -p sentinel-task4-test -f $TestComposeFile down | Out-Null
+        & docker compose -p sentinel-test -f $TestComposeFile down | Out-Null
     }
     & docker compose -f $ComposeFile down | Out-Null
 }

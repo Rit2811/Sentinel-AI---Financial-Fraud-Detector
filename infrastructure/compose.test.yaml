@@ -1,4 +1,4 @@
-name: sentinel-task4-test
+name: sentinel-test
 
 services:
   postgres:
@@ -11,6 +11,9 @@ services:
       - "127.0.0.1:${TEST_POSTGRES_PORT:-25432}:5432"
     tmpfs:
       - /var/lib/postgresql/data
+    networks:
+      default:
+        aliases: [sentinel-task4-test-postgres-1]
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U sentinel -d sentinel_task4_test"]
       interval: 5s
@@ -25,6 +28,9 @@ services:
       - "127.0.0.1:${TEST_REDIS_PORT:-26379}:6379"
     tmpfs:
       - /data
+    networks:
+      default:
+        aliases: [sentinel-task4-test-redis-1]
     healthcheck:
       test: ["CMD", "redis-cli", "-a", "sentinel_test_only", "ping"]
       interval: 5s

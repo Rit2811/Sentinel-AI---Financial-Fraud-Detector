@@ -1,0 +1,50 @@
+# Apply only after verified import; no database credentials enter the web service.
+services:
+  api:
+    image: ${APPLICATION_API_IMAGE:-sentinel-ai-api:supabase}
+    environment:
+      POSTGRES_URL: ${DATABASE_URL:?Verified Supabase Session pooler URL is required}
+      DATABASE_URL: ${DATABASE_URL:?Verified Supabase Session pooler URL is required}
+      PGSSLMODE: verify-full
+      PGSSLROOTCERT: /run/secrets/supabase-root.crt
+      POSTGRES_POOL_MAX: '3'
+      POSTGRES_POOL_MIN: '3'
+      SCORING_ACTIVATION_HOLD: '1'
+      INGESTION_PROFILE: '1'
+    volumes:
+      - ../secrets/supabase-root.crt:/run/secrets/supabase-root.crt:ro
+  publisher:
+    image: ${APPLICATION_API_IMAGE:-sentinel-ai-api:supabase}
+    environment:
+      POSTGRES_URL: ${DATABASE_URL:?Verified Supabase Session pooler URL is required}
+      DATABASE_URL: ${DATABASE_URL:?Verified Supabase Session pooler URL is required}
+      PGSSLMODE: verify-full
+      PGSSLROOTCERT: /run/secrets/supabase-root.crt
+      POSTGRES_POOL_MAX: '1'
+      PUBLISHER_PROFILE: '1'
+      STREAM_BATCH_SIZE: ${PUBLISHER_BATCH_SIZE:-1}
+    volumes:
+      - ../secrets/supabase-root.crt:/run/secrets/supabase-root.crt:ro
+  consumer:
+    image: ${APPLICATION_API_IMAGE:-sentinel-ai-api:supabase}
+    environment:
+      POSTGRES_URL: ${DATABASE_URL:?Verified Supabase Session pooler URL is required}
+      DATABASE_URL: ${DATABASE_URL:?Verified Supabase Session pooler URL is required}
+      PGSSLMODE: verify-full
+      PGSSLROOTCERT: /run/secrets/supabase-root.crt
+      POSTGRES_POOL_MAX: '1'
+    volumes:
+      - ../secrets/supabase-root.crt:/run/secrets/supabase-root.crt:ro
+  scoring-worker:
+    image: ${SCORING_WORKER_IMAGE:-sentinel-ai-scoring-worker:supabase}
+    restart: 'no'
+    environment:
+      POSTGRES_URL: ${DATABASE_URL:?Verified Supabase Session pooler URL is required}
+      DATABASE_URL: ${DATABASE_URL:?Verified Supabase Session pooler URL is required}
+      PGSSLMODE: verify-full
+      PGSSLROOTCERT: /run/secrets/supabase-root.crt
+      SCORING_PROFILE: '1'
+      SCORING_CONCURRENCY: ${SCORING_CONCURRENCY:-1}
+      APPLICATION_DATABASE_TARGET_SHA256: ${APPLICATION_DATABASE_TARGET_SHA256:?Verified application target pin required}
+    volumes:
+      - ../secrets/supabase-root.crt:/run/secrets/supabase-root.crt:ro

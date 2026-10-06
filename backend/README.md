@@ -101,5 +101,5 @@ Schema-v2 acceptance now includes pending processing and a result location.
 Migration 0006 implements once-only simulated execution and separate authorized
 review resolution. No fixture or application scoring worker is activated.
 
-See `../docs/task-6-worker-status.md`, `../docs/task-6-requests.http` and OpenAPI
+See `../docs/scoring-worker-status.md`, `../docs/transaction-replay.http` and OpenAPI
 for actual routes, states, test coverage and the remaining activation gates.
