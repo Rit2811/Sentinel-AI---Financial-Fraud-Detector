@@ -1,10 +1,12 @@
 # Remaining Project Work
 
-LATEST: [Mumbai deployment](mumbai-deployment.md) supersedes the deployment notes
-below. Migration and full backup restoration passed; one-second peak acceptance
-has NOT passed. Writers are stopped after renewed measured clock drift. Restore
-stable clock sync, verify short checks, then BOTH ten-minute actual 1/5 TPS tests
-and final qualified-deployment actions/review/readiness/recovery. Activation held.
+LATEST: [pipeline qualification](pipeline-qualification.md) supersedes the
+deployment notes below. Mumbai migration and full backup restoration passed;
+clock synchronization is now verified. Actual parallel normal precheck still
+failed (24 Scored/6 Expired of30), so no full qualification followed. Writers
+remain stopped. A meaningful measured correction and passing short checks must
+precede BOTH ten-minute actual 1/5 TPS tests and final qualified-deployment
+actions/review/readiness/recovery. Activation remains held.
 The following local-storage checkpoint and older metrics are HISTORICAL.
 
 Latest evidence: [storage and pipeline correction](storage-and-pipeline-correction.md).
@@ -79,16 +81,17 @@ minor optimization or an unapproved deadline increase.
 
 ## Task 7 Boundary
 
-The supplied dataset-switch and Task 5/6 guides do not define a precise Task 7
-acceptance plan. They explicitly defer feedback learning, drift monitoring and
-adaptation. Do not treat a suggested next phase as an approved implementation.
-The guide's G7 recovery/handoff gate belongs to Task 6; it is not Task 7.
+The imported [laptop handoff](task-6-task-7-pc-handoff.md) records an owner-defined
+Task 7: verify the existing frozen scorer's historical/live feature contract,
+produce its feature dictionary, and demonstrate point-in-time/parity/recovery
+properties. It is NOT feedback learning, drift monitoring or automatic updates.
+Task 7 is not started by the local branch reconciliation. Its eventual completion
+would not complete Task 6 or authorize activation. The original guide's G7
+recovery/handoff gate still belongs to Task 6 and is distinct from this scope.
 
-A possible next phase is a separately specified confirmed-outcome feedback
-contract, drift/performance monitoring and controlled model updates. Human
-allow/reject decisions are NOT confirmed fraud labels. New models would need
-independent evaluation, approval, versioning and rollback; automatic learning
-from Pass/Review/Block is not acceptable. None of this is started in Task 6.
+Human allow/reject decisions are NOT confirmed fraud labels. Future new models
+would need separate evaluation, approval, versioning and rollback. Those broader
+proposals remain outside both the current Task 6 and recorded Task 7 scope.
 
 ## Broader Roadmap Gaps
 

@@ -88,6 +88,14 @@ def test_manifest_checked_before_traffic_but_reference_model_loaded_after_termin
     monkeypatch.setattr(benchmark, "FrozenScorer", Scorer)
     monkeypatch.setattr(benchmark, "call", call)
     monkeypatch.setattr(
+        benchmark,
+        "clock_measurements",
+        lambda _: [
+            {"rtt_ms": 2.0, "midpoint_offset_ms": 0.0, "uncertainty_ms": 1.0}
+            for _ in range(4)
+        ],
+    )
+    monkeypatch.setattr(
         benchmark.psycopg, "connect", lambda *_args, **_kwargs: Database()
     )
     monkeypatch.setattr(benchmark, "durable_latency_report", lambda *_: {"count": 0})

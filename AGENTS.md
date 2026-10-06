@@ -1,5 +1,23 @@
 # Repository Instructions
 
+LOCAL BRANCH RECONCILIATION (2026-10-06): owner explicitly approved LOCAL
+checkpoint/merge/testing only, NOT pushing or main changes. PC checkpoint8619787
+is retained at recovery/pc-checkpoint-20261006; laptop commit410472e is reconciled
+on ritwik. Four Compose conflicts retain the already-tested canonical names.
+Isolated sentinel-test keeps Compose-generated names and legacy DNS aliases;
+no fixed container names that break worker_benchmark/restart tests. Laptop docs
+are preserved with historical-status headers. Their Task7 feature-verification
+scope is recorded, NOT started; current deployment status remains authoritative.
+Tests:180backendunit,49integration,126focusedPython PASS; lint/format/Compose
+PASS; real container DNS probe and opted-in isolated Redis restart PASS.
+Initial Python run125pass/1fail exposed a stale clock stub; test-only repair,
+then full126pass. Production clock/deadline/model untouched;816existing NumPy
+deprecation warnings. All43private runtime/frozen/gate-file hashes unchanged.
+Secrets/cache/artifacts excluded from Git. Test fixtures stopped after checks;
+application writers remain stopped, Task5 COMPLETE,Task6 INCOMPLETE/hold remains.
+Read docs/branch-reconciliation.md. Do NOT push or merge main without separate
+approval. Git does not transfer images, secrets, model artifacts or Redis data.
+
 LAPTOP HANDOFF PREPARATION (2026-10-06): owner reports Windows Ryzen laptop,
 16GB RAM,512GB SSD,Docker installed; exact CPU/Docker storage/limits unverified.
 This workspace is STILL on i5-6200U/about8GB/HDD. No transfer or destination test
