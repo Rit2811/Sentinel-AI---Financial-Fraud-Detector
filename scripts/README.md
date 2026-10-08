@@ -1,5 +1,14 @@
-# Repository scripts
+# Repository Scripts
 
-`verify.ps1` (Windows) and `verify.sh` (Bash environments) implement `make verify`. They run backend and frontend static checks and tests, validate and start the four-service stack, cycle Task 3 migrations down/up, run real-PostgreSQL concurrency and rollback tests, perform endpoint smoke and truthful-readiness failure checks, restart the stack, inspect bounded logs, and shut it down without deleting volumes.
+- `new-teammate-env.ps1` generates a private independent configuration and refuses
+  to overwrite existing credentials.
+- `teammate.ps1` builds/starts/checks/stops the dedicated `sentinel-team` Docker
+  profile; see [teammate setup](../docs/teammate-setup.md).
+- `bootstrap` installs locked host development dependencies.
+- `new-local-secret.ps1` generates one local secret for manual use.
 
-The matching `bootstrap` scripts install locked dependencies. The `clean` scripts remove only explicitly listed generated dependency/cache/build directories beneath the repository and never touch Docker volumes.
+The owner's laptop provisioning/activation scripts are bound to that deployment
+and are not teammate bootstrap tools. General legacy `verify` scripts manage
+their own stacks and migration tests; inspect their targets before use. Use
+explicit isolated fixtures for destructive reset/rollback/recovery tests.
+Cleanup scripts must never delete retained Docker application volumes.

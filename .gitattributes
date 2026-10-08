@@ -1,0 +1,4 @@
+# FrozenScorer verifies the exact bytes of these serving implementation files.
+/services/ml/src/fraud_ml/serving.py text eol=lf
+/services/ml/src/fraud_ml/features.py text eol=lf
+/services/ml/src/fraud_ml/ensemble/probability.py text eol=lf

@@ -71,3 +71,18 @@ def test_local_application_guard_is_unchanged():
     assert application_database_matches(
         SimpleNamespace(info=SimpleNamespace(dbname="sentinel"))
     )
+
+
+def test_pinned_local_application_requires_exact_private_identity():
+    url = "postgresql://sentinel:placeholder@postgres:5432/sentinel"
+    connection = cloud_connection(host="postgres", user="sentinel", dbname="sentinel")
+    connection.pgconn.ssl_in_use = False
+    pin = database_target_sha256(url)
+    assert application_database_matches(connection, pin)
+    assert not application_database_matches(
+        cloud_connection(host="postgres", user="other", dbname="sentinel"), pin
+    )
+    assert not application_database_matches(
+        cloud_connection(host="public.example", user="sentinel", dbname="sentinel"), pin
+    )
+    assert not application_database_matches(connection, "a" * 64)

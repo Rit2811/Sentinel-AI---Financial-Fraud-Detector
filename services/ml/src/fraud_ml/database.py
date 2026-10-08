@@ -34,11 +34,12 @@ def application_database_matches(connection, expected_target=None):
     actual = hashlib.sha256(
         json.dumps(identity, sort_keys=True, separators=(",", ":")).encode()
     ).hexdigest()
+    if len(expected_target) != 64 or actual != expected_target or info.port != 5432:
+        return False
+    if info.host in ("postgres", "sentinel-ai-postgres-1"):
+        return info.dbname == "sentinel"
     return (
-        len(expected_target) == 64
-        and actual == expected_target
-        and info.host.endswith(".pooler.supabase.com")
-        and info.port == 5432
+        info.host.endswith(".pooler.supabase.com")
         and info.dbname == "postgres"
         and connection.pgconn.ssl_in_use
     )

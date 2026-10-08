@@ -26,7 +26,11 @@ from threadpoolctl import threadpool_limits
 from .features import FEATURE_ORDER, FeatureStream
 from .serving import FrozenScorer, verify_manifest
 from .worker import guard_fixture_urls
-from .database import database_target_sha256, database_connection
+from .database import (
+    database_target_sha256,
+    database_connection,
+    application_database_matches,
+)
 from .worker_benchmark import (
     call,
     durable_latency_report,
@@ -180,7 +184,14 @@ def main(argv=None):
     parser.add_argument("--runtime-metadata", type=Path)
     parser.add_argument("--diagnostic-deadline-ms", type=int, choices=(2000,))
     parser.add_argument("--external-database-target-sha256")
+    parser.add_argument("--local-database-target-sha256")
     args = parser.parse_args(argv)
+    if args.local_database_target_sha256 and (
+        not args.application_docker_client
+        or args.diagnostic_deadline_ms
+        or args.external_database_target_sha256
+    ):
+        raise ValueError("Local target pin requires a one-second application client")
     run_id = str(UUID(args.run_id))
     deadline_ms = args.diagnostic_deadline_ms or 1000
     if args.application_docker_client and not args.application:
@@ -212,6 +223,11 @@ def main(argv=None):
         guard_application_urls(
             pg, rd, args.application_docker_client, args.external_database_target_sha256
         )
+        if (
+            args.local_database_target_sha256
+            and database_target_sha256(pg) != args.local_database_target_sha256
+        ):
+            raise ValueError("Local target identity mismatch")
         args.output.parent.mkdir(parents=True, exist_ok=True)
         with args.output.open("x", encoding="utf-8") as stream:
             json.dump({"status": "STARTING", "run_id": run_id}, stream)
@@ -222,6 +238,10 @@ def main(argv=None):
     token = os.environ["RESULT_API_TOKEN"]
     headers = {"Authorization": f"Bearer {token}"}
     with psycopg.connect(pg, autocommit=True, row_factory=dict_row) as db:
+        if args.local_database_target_sha256 and not application_database_matches(
+            db, args.local_database_target_sha256
+        ):
+            raise ValueError("Connected local application differs from its target pin")
         db.execute("SET extra_float_digits=3")
         clock_before = clock_measurements(db)
         if not clocks_consistent(clock_before):
@@ -689,7 +709,8 @@ def main(argv=None):
                     + db.execute("SHOW server_version").fetchone()["server_version"]
                     if args.external_database_target_sha256
                     else (
-                        "actual sentinel persistent PostgreSQL 16.4"
+                        "actual sentinel persistent PostgreSQL "
+                        + db.execute("SHOW server_version").fetchone()["server_version"]
                         if args.application
                         else "isolated tmpfs PostgreSQL 16.4"
                     )

@@ -144,7 +144,7 @@ def main(argv=None):
     if args.deployment_metadata:
         deployed = json.loads(args.deployment_metadata.read_text(encoding="utf-8"))
         if (
-            deployed.get("status") != "LOAD_QUALIFIED"
+            deployed.get("status") not in ("LOAD_QUALIFIED", "ACTIVE_QUALIFIED")
             or deployed["bundle_sha256"] != metadata["bundle_sha256"]
             or deployed["gate_report_sha256"] != metadata["gate_report_sha256"]
         ):
@@ -173,7 +173,11 @@ def main(argv=None):
             raise ValueError("Diagnostic actions require a separate run")
         metadata = dict(metadata, run_id=str(args.diagnostic_run_id))
     if args.diagnostic_run_id or args.deployment_metadata:
-        from .application_benchmark import inspect_container, verify_external_target
+        from .application_benchmark import (
+            inspect_container,
+            verify_external_target,
+            deployed_bundle_path,
+        )
         from .database import database_target_sha256
 
         details = [
@@ -200,7 +204,47 @@ def main(argv=None):
         ):
             raise ValueError("Action check images differ from qualified deployment")
         target = None
-        if api.get("PGSSLMODE") == "verify-full":
+        if metadata.get("deployment_layout") == "laptop-local-pg17":
+            from .deployment_binding import verify_local_binding
+
+            binding_path = Path(metadata["deployment_binding"])
+            if sha256(binding_path) != metadata["deployment_binding_sha256"]:
+                raise ValueError("Qualified local binding changed")
+            binding, api = verify_local_binding(
+                binding_path,
+                inspect_container,
+                ml_root / "artifacts/runtime/application.json",
+                allow_active=metadata.get("status") == "ACTIVE_QUALIFIED",
+            )
+            if metadata.get("status") == "ACTIVE_QUALIFIED":
+                qualified = json.loads(Path(binding["qualified_metadata"]).read_text())
+                if (
+                    metadata.get("activation_authorized") is not True
+                    or args.held
+                    or metadata.get("activation_approval_sha256")
+                    != binding["activation_approval_sha256"]
+                    or any(
+                        metadata[key] != qualified[key]
+                        for key in (
+                            "normal_report",
+                            "normal_report_sha256",
+                            "peak_report",
+                            "peak_report_sha256",
+                            "pipeline_configuration",
+                        )
+                    )
+                ):
+                    raise ValueError(
+                        "Active action check requires approved qualification"
+                    )
+            target = binding["database_target_sha256"]
+            config = dict(
+                config,
+                RESULT_API_TOKEN=api["RESULT_API_TOKEN"],
+                REVIEW_API_TOKEN=api["REVIEW_API_TOKEN"],
+                REVIEWER_ID=api["REVIEWER_ID"],
+            )
+        elif api.get("PGSSLMODE") == "verify-full":
             target = database_target_sha256(api["POSTGRES_URL"])
             verify_external_target(details, target, root / "secrets/supabase-root.crt")
         if args.deployment_metadata and target != metadata["database_target_sha256"]:
@@ -229,7 +273,12 @@ def main(argv=None):
         args.verify_report.write_text(json.dumps(report, indent=2), encoding="utf-8")
         print(json.dumps({"report": str(args.verify_report), "restart_parity": True}))
         return
-    scorer = FrozenScorer(config["SCORING_BUNDLE_DIR"], config["SCORING_BUNDLE_SHA256"])
+    bundle = (
+        deployed_bundle_path(details[2], metadata["bundle_sha256"])
+        if args.deployment_metadata or args.diagnostic_run_id
+        else config["SCORING_BUNDLE_DIR"]
+    )
+    scorer = FrozenScorer(bundle, config["SCORING_BUNDLE_SHA256"])
     scorer.verify_references()
     selected = generated_cases(scorer)
     cases = []
@@ -243,7 +292,7 @@ def main(argv=None):
         "cases": cases,
         "reserved_test_accessed": False,
         "diagnostic_only": args.diagnostic_run_id is not None or args.held,
-        "activation_authorized": False,
+        "activation_authorized": metadata.get("activation_authorized", False),
         "started_at": datetime.now(UTC).isoformat(),
     }
     output = (

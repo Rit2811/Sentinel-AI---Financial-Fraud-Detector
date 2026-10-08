@@ -7,6 +7,8 @@
 *.p12
 *.pfx
 secrets/
+/sentinel-laptop-private-transfer-*.zip
+/sentinel-laptop-private-transfer-*.zip.sha256
 
 # Raw, local, and derived data
 data/raw/
@@ -89,6 +91,12 @@ Desktop.ini
 
 # Private task briefs, planning documents, and internal change reports
 *.pdf
+/AGENTS.md
+# Keep owner planning, task instructions, progress and evidence local by default.
+# Only the public documentation index and teammate setup guide are distributed.
+/docs/*
+!/docs/README.md
+!/docs/teammate-setup.md
 /docs/planning/
 /docs/task-*-change-report.*
 

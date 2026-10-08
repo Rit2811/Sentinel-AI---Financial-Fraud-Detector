@@ -1,0 +1,44 @@
+# Persistent local PostgreSQL application; apply AFTER the base file, never Supabase.
+services:
+  postgres:
+    image: ${LOCAL_POSTGRES_IMAGE:?Pinned PG17 image required}
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Local password required}
+    command: [postgres, -c, fsync=on, -c, synchronous_commit=on, -c, track_io_timing=on, -c, track_wal_io_timing=on]
+  redis:
+    command: [redis-server, --appendonly, 'yes', --requirepass, '${REDIS_PASSWORD:?Local Redis password required}']
+  api:
+    image: ${APPLICATION_API_IMAGE:?Preserved API image required}
+    environment:
+      POSTGRES_POOL_MIN: '3'
+      POSTGRES_POOL_MAX: '3'
+      SCORING_ACTIVATION_HOLD: '${SCORING_ACTIVATION_HOLD:-1}'
+      INGESTION_PROFILE: '1'
+      RESULT_API_TOKEN: ${RESULT_API_TOKEN:?Local result token required}
+      REVIEW_API_TOKEN: ${REVIEW_API_TOKEN:?Local review token required}
+      REVIEWER_ID: ${REVIEWER_ID:?Local reviewer identity required}
+  publisher:
+    image: ${APPLICATION_API_IMAGE:?Preserved API image required}
+    environment:
+      DATABASE_URL: ${DATABASE_URL:?Local database URI required}
+      POSTGRES_POOL_MIN: '0'
+      POSTGRES_POOL_MAX: '1'
+      STREAM_BATCH_SIZE: '2'
+      PUBLISHER_PROFILE: '1'
+  consumer:
+    profiles: [proof-consumer]
+  dashboard:
+    image: ${APPLICATION_DASHBOARD_IMAGE:-${APPLICATION_WEB_IMAGE:-sentinel-ai-dashboard:application}}
+  scoring-worker:
+    image: ${SCORING_WORKER_IMAGE:?Pinned local worker image required}
+    restart: 'no'
+    environment:
+      DATABASE_URL: ${DATABASE_URL:?Local database URI required}
+      APPLICATION_DATABASE_TARGET_SHA256: ${APPLICATION_DATABASE_TARGET_SHA256:?Verified local target pin required}
+      SCORING_CONCURRENCY: '2'
+      SCORING_PROFILE: '1'
+volumes:
+  postgres_data:
+    name: ${LOCAL_POSTGRES_VOLUME:?NEW application PostgreSQL volume required}
+  redis_data:
+    name: ${LOCAL_REDIS_VOLUME:?NEW restored Redis volume required}
