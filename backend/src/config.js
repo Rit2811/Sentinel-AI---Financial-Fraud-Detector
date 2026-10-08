@@ -2,6 +2,7 @@ export const config = Object.freeze({
   port: Number(process.env.PORT ?? 8000),
   postgresUrl:
     process.env.POSTGRES_URL ??
+    process.env.DATABASE_URL ??
     'postgresql://sentinel:sentinel_local_only@127.0.0.1:15432/sentinel',
   redisUrl:
     process.env.REDIS_URL ?? 'redis://:sentinel_local_only@127.0.0.1:16379/0',

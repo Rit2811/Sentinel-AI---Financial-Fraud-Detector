@@ -4,6 +4,61 @@ import pytest
 
 from fraud_ml import application_benchmark as benchmark
 from fraud_ml.serving import sha256
+from fraud_ml.database import database_target_sha256
+
+
+def test_external_workload_requires_explicit_candidate_and_target():
+    with pytest.raises(SystemExit):
+        benchmark.main(
+            [
+                "--tps",
+                "1",
+                "--seconds",
+                "10",
+                "--external-database-target-sha256",
+                "a" * 64,
+            ]
+        )
+
+
+@pytest.mark.parametrize("wrong", [None, "target", "tls", "certificate", "writable"])
+def test_external_database_verification_is_pinned_and_read_only(tmp_path, wrong):
+    cert = tmp_path / "root.crt"
+    cert.write_text("test-certificate")
+    other = tmp_path / "other.crt"
+    other.write_text("different-certificate")
+    root = "/run/secrets/supabase-root.crt"
+    url = (
+        "postgresql://postgres.example:placeholder@aws-0-example.pooler.supabase.com:5432/postgres?sslmode=verify-full&sslrootcert="
+        + root
+    )
+    pin = database_target_sha256(url)
+    env = {
+        "POSTGRES_URL": url,
+        "DATABASE_URL": url,
+        "PGSSLROOTCERT": root,
+        "PGSSLMODE": "verify-full",
+    }
+    if wrong == "target":
+        env["POSTGRES_URL"] = url.replace("postgres.example", "postgres.other")
+        env["DATABASE_URL"] = env["POSTGRES_URL"]
+    if wrong == "tls":
+        env["PGSSLMODE"] = "require"
+    detail = {
+        "Config": {"Env": [key + "=" + value for key, value in env.items()]},
+        "Mounts": [
+            {
+                "Destination": root,
+                "Source": str(other if wrong == "certificate" else cert),
+                "RW": wrong == "writable",
+            }
+        ],
+    }
+    if wrong:
+        with pytest.raises(ValueError):
+            benchmark.verify_external_target([detail], pin, cert)
+    else:
+        benchmark.verify_external_target([detail], pin, cert)
 
 
 @pytest.mark.parametrize("seconds", ["0", "601"])
@@ -41,7 +96,7 @@ def test_application_client_rejects_wrong_deployment_before_start(
 ):
     ml = tmp_path / "services/ml"
     (ml / "artifacts/runtime").mkdir(parents=True)
-    environment = tmp_path / ".env.task6.local"
+    environment = tmp_path / ".env.application.local"
     environment.write_text("RESULT_API_TOKEN=unit-test-only\n")
     metadata = {
         "environment_sha256": sha256(environment),

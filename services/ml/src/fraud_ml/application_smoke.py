@@ -17,6 +17,8 @@ from threadpoolctl import threadpool_limits
 
 from .features import features_from_prior
 from .serving import FrozenScorer
+from .runtime import application_environment, check_deployment_workloads
+from .serving import sha256
 
 
 BASE = "http://127.0.0.1:18000"
@@ -109,29 +111,108 @@ def generated_cases(scorer):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--diagnostic-run-id", type=UUID)
+    parser.add_argument("--deployment-metadata", type=Path)
+    parser.add_argument("--held", action="store_true")
     parser.add_argument(
         "--verify-report",
         type=Path,
         help="Recheck existing evidence after restart; no new ingestion",
     )
     args = parser.parse_args(argv)
+    if (
+        args.held
+        and not args.deployment_metadata
+        or args.deployment_metadata
+        and args.diagnostic_run_id
+    ):
+        parser.error(
+            "Held qualified deployment requires separate metadata, not a diagnostic run override"
+        )
     ml_root = Path(__file__).resolve().parents[2]
     root = ml_root.parents[1]
     config = {
         key: value
-        for line in (root / ".env.task6.local").read_text(encoding="utf-8").splitlines()
+        for line in application_environment(root)
+        .read_text(encoding="utf-8")
+        .splitlines()
         if line and not line.startswith("#")
         for key, value in [line.split("=", 1)]
     }
     metadata = json.loads((ml_root / "artifacts/runtime/application.json").read_text())
     if config["SCORING_RUN_ID"] != metadata["run_id"]:
         raise ValueError("Application run identity mismatch")
+    if args.deployment_metadata:
+        deployed = json.loads(args.deployment_metadata.read_text(encoding="utf-8"))
+        if (
+            deployed.get("status") != "LOAD_QUALIFIED"
+            or deployed["bundle_sha256"] != metadata["bundle_sha256"]
+            or deployed["gate_report_sha256"] != metadata["gate_report_sha256"]
+        ):
+            raise ValueError("Matching qualified cloud evidence required")
+        for name, pin in deployed["environment_files_sha256"].items():
+            if sha256(name) != pin:
+                raise ValueError("Qualified deployment environment changed")
+        for key in ("normal_report", "peak_report"):
+            if sha256(deployed[key]) != deployed[key + "_sha256"]:
+                raise ValueError("Qualified workload evidence changed")
+        if (
+            sha256(ml_root / "artifacts/runtime/application.json")
+            != deployed["original_runtime_sha256"]
+        ):
+            raise ValueError("Original approval metadata changed")
+        check_deployment_workloads(
+            Path(deployed["normal_report"]),
+            Path(deployed["peak_report"]),
+            deployed["bundle_sha256"],
+            deployed["run_id"],
+            deployed["database_target_sha256"],
+        )
+        metadata = deployed
     if args.diagnostic_run_id:
         if str(args.diagnostic_run_id) == metadata["run_id"]:
             raise ValueError("Diagnostic actions require a separate run")
         metadata = dict(metadata, run_id=str(args.diagnostic_run_id))
+    if args.diagnostic_run_id or args.deployment_metadata:
+        from .application_benchmark import inspect_container, verify_external_target
+        from .database import database_target_sha256
+
+        details = [
+            inspect_container(name)
+            for name in (
+                "sentinel-ai-api-1",
+                "sentinel-ai-publisher-1",
+                "sentinel-ai-scoring-worker-1",
+            )
+        ]
+        api = dict(
+            value.split("=", 1) for value in details[0]["Config"]["Env"] if "=" in value
+        )
+        command = details[2]["Config"]["Cmd"]
+        if (
+            api.get("SCORING_RUN_ID") != metadata["run_id"]
+            or command[command.index("--run-id") + 1] != metadata["run_id"]
+            or details[0]["Image"] != details[1]["Image"]
+        ):
+            raise ValueError("Action check deployment identity mismatch")
+        if args.deployment_metadata and (
+            details[0]["Image"] != metadata["backend_image_id"]
+            or details[2]["Image"] != metadata["worker_image_id"]
+        ):
+            raise ValueError("Action check images differ from qualified deployment")
+        target = None
+        if api.get("PGSSLMODE") == "verify-full":
+            target = database_target_sha256(api["POSTGRES_URL"])
+            verify_external_target(details, target, root / "secrets/supabase-root.crt")
+        if args.deployment_metadata and target != metadata["database_target_sha256"]:
+            raise ValueError("Action check database differs from qualified deployment")
+        metadata = dict(
+            metadata,
+            backend_image_id=details[0]["Image"],
+            worker_image_id=details[2]["Image"],
+            database_target_sha256=target,
+        )
     status, _ = request("/ready/scoring")
-    if status != (503 if args.diagnostic_run_id else 200):
+    if status != (503 if args.diagnostic_run_id or args.held else 200):
         raise RuntimeError("Application scoring is not ready")
     token = config["RESULT_API_TOKEN"]
     if args.verify_report:
@@ -155,16 +236,19 @@ def main(argv=None):
     report = {
         "run_id": metadata["run_id"],
         "bundle_sha256": metadata["bundle_sha256"],
+        "worker_image_id": metadata.get("worker_image_id"),
+        "backend_image_id": metadata.get("backend_image_id"),
+        "database_target_sha256": metadata.get("database_target_sha256"),
         "data": "Three generated label-free fixtures; no reserved-test data",
         "cases": cases,
         "reserved_test_accessed": False,
-        "diagnostic_only": args.diagnostic_run_id is not None,
+        "diagnostic_only": args.diagnostic_run_id is not None or args.held,
         "activation_authorized": False,
         "started_at": datetime.now(UTC).isoformat(),
     }
     output = (
         ml_root
-        / "reports/task6-application"
+        / "reports/replay-actions"
         / datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
     )
     output.mkdir(parents=True, exist_ok=False)

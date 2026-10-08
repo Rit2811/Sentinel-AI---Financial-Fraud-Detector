@@ -1,4 +1,60 @@
-# Task 6 Verification Record
+# Scoring Verification Record
+
+## Latest Mumbai Checkpoint (2026-10-06)
+
+Read [Mumbai deployment](mumbai-deployment.md) FIRST. The closer database migration
+and full post-diagnostic backup restore passed; all source data/configurations
+remain preserved. Ordered bounded worker grouping and expiry recovery passed
+47 isolated worker/profile checks, including enabled Redis restart. Qualification
+helpers passed 52 checks. The selected image's worker source exactly matches the
+tested source. Task 5 remains COMPLETE; Task 6 is INCOMPLETE/activation HELD.
+Short normal scored 30/30; peak scored 17/150. A slower outer-pipeline experiment
+was rejected and removed based on actual read-only pooler measurements.
+Windows/Docker are UNSYNCHRONIZED AGAIN and about 460ms ahead of the DB; an agent
+resync returned Access denied. This renewed drift supersedes the earlier completed
+sync checkpoint below. All writers are stopped. Need stable sync, valid-clock
+prechecks, ten-minute qualifications at BOTH 1/5 TPS with zero expiries, and final
+Mumbai-pinned readiness/action/review/restart checks. No ML reevaluation or relaxed
+deadline/durability. Subsequent sections are historical records, not resume targets.
+
+## Latest Valid-Clock Check (2026-10-06)
+
+Read [the valid-clock record](supabase-clock-resume.md) first. Owner's time-sync
+action passed Windows/Docker/DB checks; do not repeat that manual request.
+Unchanged cloud deployment still FAILED normal 1 TPS/30s: 30 accepted, all Expired.
+Short nominal 5 TPS/10s: 50 attempted, 44 accepted/all Expired, six ingestion
+errors; actual offered 3.908 TPS, not qualified 5 TPS. No new score/execution.
+All 74 accepted events ultimately published; all 1607 candidate features/hashes
+reproduce. Cloud now has 17019 events/history/snapshots, source unchanged/read-only.
+The measured blocker is network/pipeline/pool latency, not the resolved clock
+skew. Earliest normal assignment was already 1179.54ms after acceptance.
+No full ten-minute tests were run after failed prechecks. Task 5 COMPLETE;
+Task 6 INCOMPLETE, activation held. Writers stopped, workload_gate_failed.
+Owner's deployment choice is pending: closer verified DB target or supplied
+existing runtime host near Tokyo; no new project/paid resource is assumed.
+Latest backup and complete settled timings are in the linked record. Original
+ML package/policy/deadline/durability and reserved evaluation remain unchanged.
+
+## Latest Supabase Deployment (2026-10-05)
+
+Latest deployment checkpoint (2026-10-05): read supabase-database-migration.md
+before historical local workload results below. Application data migrated to the
+verified Supabase Session pooler and full PG17 cloud-backup restore comparison
+passed all 18 table/catalog/sequence checks. Original local source is unchanged
+and read-only. The final held cloud images are documented there; older local
+performance reports do not qualify this changed deployment.
+
+Task 5 COMPLETE, Task 6 INCOMPLETE, activation BLOCKED. Windows/Docker clocks
+were measured about 1090ms behind Supabase, with Windows time unsynchronized.
+Administrative w32tm /resync is requested; agent's attempt was access-denied.
+Cloud diagnostic normal: 30 accepted/30 Expired; peak: 150 attempted, 93 accepted,
+all 93 ultimately Expired and published, 57 ingestion failures, zero executions.
+No timely cloud scoring or new score-parity pass is established. Repeated expired
+delivery added no history/decisions/actions; restart reproduced 1533 snapshots.
+Clock synchronization, valid-clock short checks, ten-minute 1/5 TPS zero-expiry
+qualification and final deployment actions/review/readiness are still required.
+All cloud writers are stopped, original Redis/volumes preserved. Model, thresholds,
+1000ms deadline and reserved evaluation remain unchanged; Task 7 not started.
 
 ## Latest Storage/Pipeline Correction (2026-10-05)
 
@@ -51,7 +107,7 @@ the end of this record. The owner explicitly authorized its implementation and
 testing, NOT activation or weaker durability. The previous unanswered-approval
 statements below are historical and no longer block this engineering change.
 
-This record supersedes earlier status statements in `task-6-worker-status.md`.
+This record supersedes earlier status statements in `scoring-worker-status.md`.
 No model, calibrator or policy was changed during these workload experiments.
 
 ## Application Database and Recovery
@@ -133,7 +189,7 @@ despite the owner's intended 2 GB setting. No user `.wslconfig` existed, and onl
 `docker-desktop` was running in WSL. WSL memory pressure is a plausible contributor;
 the observations do not prove it is the sole cause.
 
-Reviewed proposal `infrastructure/wslconfig.task6` sets only `[wsl2] memory=2GB`.
+Reviewed proposal `infrastructure/wslconfig.prototype` sets only `[wsl2] memory=2GB`.
 On the owner's continuation request, it was installed as the previously absent
 `C:/Users/lenovo/.wslconfig`; Docker Desktop was stopped, WSL shut down and Docker
 restarted. No volumes were removed. Docker now reports 1,998,868,480 memory bytes.

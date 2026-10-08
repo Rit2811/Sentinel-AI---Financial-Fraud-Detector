@@ -26,7 +26,7 @@ from threadpoolctl import threadpool_limits
 
 from .features import FEATURE_ORDER, FeatureStream
 from .ensemble.reporting import code_record
-from .serving import FrozenScorer
+from .serving import FrozenScorer, sha256
 from .worker import guard_fixture_urls
 
 
@@ -189,7 +189,7 @@ def main(argv=None):
         f"task6-test:{uuid4()}",
         uuid4().hex + uuid4().hex,
     )
-    output = Path("reports/task6-worker") / datetime.now(UTC).strftime(
+    output = Path("reports/scoring-load") / datetime.now(UTC).strftime(
         "%Y%m%dT%H%M%S%fZ"
     )
     output.mkdir(parents=True, exist_ok=False)
@@ -230,7 +230,7 @@ def main(argv=None):
                 "--log-opt",
                 "max-buffer-size=1m",
                 "--network",
-                "sentinel-task4-test_default",
+                "sentinel-test_default",
             ]
             if published_port:
                 launch.extend(["-p", "127.0.0.1::8000"])
@@ -253,7 +253,7 @@ def main(argv=None):
             backend_containers.append(name)
 
         try:
-            api_name = f"task6-fixture-api-{run_id}"
+            api_name = f"sentinel-load-api-{run_id}"
             start_backend(api_name, ["node", "src/server.js"], True)
             container_port = int(
                 subprocess.check_output(
@@ -263,7 +263,7 @@ def main(argv=None):
                 .rsplit(":", 1)[1]
             )
             start_backend(
-                f"task6-fixture-publisher-{run_id}", ["node", "src/stream/publisher.js"]
+                f"sentinel-load-publisher-{run_id}", ["node", "src/stream/publisher.js"]
             )
         except Exception:
             for name in backend_containers:
@@ -292,7 +292,7 @@ def main(argv=None):
         )
     failures, samples, queue_samples = [], [], []
     worker_log = (output / "worker.log").open("w", encoding="utf-8")
-    container_name = f"task6-fixture-worker-{run_id}"
+    container_name = f"sentinel-load-worker-{run_id}"
     worker_command = [
         sys.executable,
         "-m",
@@ -321,7 +321,7 @@ def main(argv=None):
             "--log-opt",
             "max-buffer-size=1m",
             "--network",
-            "sentinel-task4-test_default",
+            "sentinel-test_default",
             "--mount",
             f"type=bind,source={args.bundle.resolve()},target=/model,readonly",
             "-e",
@@ -404,7 +404,19 @@ def main(argv=None):
             time.sleep(0.1)
 
         if args.docker_controller:
-            controller_name = f"task6-fixture-controller-{run_id}"
+            controller_name = f"sentinel-load-client-{run_id}"
+            tool_files = [
+                Path(__file__).resolve().with_name(module + ".py")
+                for module in ("connected_benchmark", "worker_benchmark", "database")
+            ]
+            tool_mounts = []
+            for source in tool_files:
+                tool_mounts.extend(
+                    [
+                        "--mount",
+                        f"type=bind,source={source},target=/app/.venv/lib/python3.12/site-packages/fraud_ml/{source.name},readonly",
+                    ]
+                )
             command = [
                 "docker",
                 "run",
@@ -412,7 +424,7 @@ def main(argv=None):
                 "--name",
                 controller_name,
                 "--network",
-                "sentinel-task4-test_default",
+                "sentinel-test_default",
                 "--entrypoint",
                 "/app/.venv/bin/python",
                 "--mount",
@@ -425,6 +437,7 @@ def main(argv=None):
                 "TEST_REDIS_URL=redis://:sentinel_test_only@sentinel-task4-test-redis-1:6379/0",
                 "-e",
                 f"RESULT_API_TOKEN={token}",
+                *tool_mounts,
                 image_id,
                 "-m",
                 "fraud_ml.connected_benchmark",
@@ -464,6 +477,10 @@ def main(argv=None):
             report.update(
                 {
                     "code": provenance,
+                    "measurement_tool_sources_sha256": {
+                        source.name: sha256(source) for source in tool_files
+                    },
+                    "tool_mount_scope": "Controller-only read-only load tools; worker/scorer image unchanged",
                     "worker_image_id": image_id,
                     "backend_image_id": backend_image_id,
                     "status": "ISOLATED_FIXTURE_BENCHMARK_NOT_ACTIVATION",

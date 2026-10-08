@@ -2,4 +2,8 @@ node_modules
 coverage
 .npm
 tests
+.env
+.env.*
+secrets
+.jest-cache
 *.log

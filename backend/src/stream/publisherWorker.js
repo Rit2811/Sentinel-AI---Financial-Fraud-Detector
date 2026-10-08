@@ -57,6 +57,7 @@ export async function publishOutboxBatch({ pool, redis, streamConfig, log }) {
   let activeRow = null
   let phase = 'lock'
   let destroyClient = false
+  let released = false
   try {
     await client.query('BEGIN')
     await client.query(
@@ -102,6 +103,10 @@ export async function publishOutboxBatch({ pool, redis, streamConfig, log }) {
     )
     destroyClient = !rolledBack || phase === 'commit'
     if (phase === 'commit' || !activeRow) throw error
+    // Failure recovery borrows a connection after rollback; release this one
+    // first so a bounded one-connection pool cannot wait on itself.
+    client.release(destroyClient)
+    released = true
     const errorCode =
       error?.message === 'invalid_stream_envelope'
         ? 'invalid_stream_envelope'
@@ -124,7 +129,7 @@ export async function publishOutboxBatch({ pool, redis, streamConfig, log }) {
     )
     return rows.length
   } finally {
-    client.release(destroyClient)
+    if (!released) client.release(destroyClient)
     if (rows.length) profile.flush()
   }
 }

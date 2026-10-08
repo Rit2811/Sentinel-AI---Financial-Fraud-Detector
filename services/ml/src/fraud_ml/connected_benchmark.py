@@ -26,6 +26,7 @@ from threadpoolctl import threadpool_limits
 from .features import FEATURE_ORDER, FeatureStream
 from .serving import FrozenScorer, verify_manifest
 from .worker import guard_fixture_urls
+from .database import database_target_sha256, database_connection
 from .worker_benchmark import (
     call,
     durable_latency_report,
@@ -50,6 +51,34 @@ def paced_due(start, index, tps, previous):
     """Missed slots extend the window instead of causing a catch-up burst."""
     return (
         max(start + index / tps, previous + 1 / tps) if previous is not None else start
+    )
+
+
+def clock_measurements(db):
+    samples = []
+    for _ in range(4):
+        start_wall = time.time() * 1000
+        tick = time.perf_counter()
+        server = float(
+            db.execute(
+                "SELECT extract(epoch FROM clock_timestamp())*1000 AS wall_ms"
+            ).fetchone()["wall_ms"]
+        )
+        rtt = (time.perf_counter() - tick) * 1000
+        samples.append(
+            {
+                "rtt_ms": rtt,
+                "midpoint_offset_ms": server - start_wall - rtt / 2,
+                "uncertainty_ms": rtt / 2,
+            }
+        )
+    return samples
+
+
+def clocks_consistent(samples):
+    # Timestamps are not corrected: reject a material offset beyond RTT uncertainty.
+    return bool(samples) and all(
+        abs(row["midpoint_offset_ms"]) <= row["uncertainty_ms"] + 25 for row in samples
     )
 
 
@@ -79,8 +108,27 @@ def generated_event(index, namespace=None):
     }
 
 
-def guard_application_urls(pg_url, redis_url, docker_client=False):
+def guard_application_urls(
+    pg_url, redis_url, docker_client=False, external_target=None
+):
     pg, rd = urlparse(pg_url), urlparse(redis_url)
+    if external_target:
+        database_connection({"POSTGRES_URL": pg_url})
+        if (
+            not docker_client
+            or database_target_sha256(pg_url) != external_target
+            or not (pg.hostname or "").endswith(".pooler.supabase.com")
+            or pg.port != 5432
+            or pg.path != "/postgres"
+            or pg.fragment
+            or rd.hostname not in ("redis", "sentinel-ai-redis-1")
+            or rd.port != 6379
+            or rd.path != "/0"
+            or rd.query
+            or rd.fragment
+        ):
+            raise ValueError("Application measurement requires the pinned cloud target")
+        return
     if docker_client:
         target_matches = (
             pg.hostname in ("postgres", "sentinel-ai-postgres-1")
@@ -131,11 +179,16 @@ def main(argv=None):
     parser.add_argument("--profile-database-waits", action="store_true")
     parser.add_argument("--runtime-metadata", type=Path)
     parser.add_argument("--diagnostic-deadline-ms", type=int, choices=(2000,))
+    parser.add_argument("--external-database-target-sha256")
     args = parser.parse_args(argv)
     run_id = str(UUID(args.run_id))
     deadline_ms = args.diagnostic_deadline_ms or 1000
     if args.application_docker_client and not args.application:
         raise ValueError("Docker application client requires explicit application mode")
+    if args.external_database_target_sha256 and (
+        not args.application_docker_client or args.diagnostic_deadline_ms
+    ):
+        raise ValueError("Cloud measurement requires a one-second application client")
     if (
         args.base
         != (
@@ -145,7 +198,7 @@ def main(argv=None):
                 else "http://127.0.0.1:18000"
             )
             if args.application
-            else f"http://task6-fixture-api-{run_id}:8000"
+            else f"http://sentinel-load-api-{run_id}:8000"
         )
         or not 1 <= args.seconds <= 600
     ):
@@ -156,7 +209,9 @@ def main(argv=None):
         if args.output is None:
             raise ValueError("Application report path required")
         pg, rd = os.environ["POSTGRES_URL"], os.environ["REDIS_URL"]
-        guard_application_urls(pg, rd, args.application_docker_client)
+        guard_application_urls(
+            pg, rd, args.application_docker_client, args.external_database_target_sha256
+        )
         args.output.parent.mkdir(parents=True, exist_ok=True)
         with args.output.open("x", encoding="utf-8") as stream:
             json.dump({"status": "STARTING", "run_id": run_id}, stream)
@@ -167,6 +222,24 @@ def main(argv=None):
     token = os.environ["RESULT_API_TOKEN"]
     headers = {"Authorization": f"Bearer {token}"}
     with psycopg.connect(pg, autocommit=True, row_factory=dict_row) as db:
+        db.execute("SET extra_float_digits=3")
+        clock_before = clock_measurements(db)
+        if not clocks_consistent(clock_before):
+            if args.output:
+                args.output.write_text(
+                    json.dumps(
+                        {
+                            "status": "BLOCKED_CLOCK_SKEW",
+                            "run_id": run_id,
+                            "clock_before": clock_before,
+                            "traffic_sent": 0,
+                            "activation_authorized": False,
+                        },
+                        indent=2,
+                    ),
+                    encoding="utf-8",
+                )
+            raise ValueError("Clock skew prevents a valid workload measurement")
         run = db.execute(
             """SELECT s.*,h.ready,h.blocked FROM scoring_runs s
             JOIN scoring_worker_health h USING(run_id) WHERE run_id=%s
@@ -384,6 +457,9 @@ def main(argv=None):
             wait_thread.join(timeout=5)
             if wait_thread.is_alive():
                 wait_errors.append("probe_did_not_stop")
+        clock_after = clock_measurements(db)
+        if not clocks_consistent(clock_after):
+            failures.append({"kind": "clock_inconsistency", "phase": "after_traffic"})
         wal_after = (
             db.execute(
                 "SELECT wal_records,wal_bytes::text,wal_write,wal_sync,wal_write_time,wal_sync_time FROM pg_stat_wal"
@@ -497,6 +573,10 @@ def main(argv=None):
         target = args.tps * args.seconds
         report = {
             "run_id": run_id,
+            "clock_before": clock_before,
+            "clock_after": clock_after,
+            "clock_checks_passed": clocks_consistent(clock_before)
+            and clocks_consistent(clock_after),
             "bundle_sha256": args.bundle_sha256,
             **deployment,
             "offline_reference_model_loaded_after_traffic": True,
@@ -604,9 +684,16 @@ def main(argv=None):
                 "platform": platform.platform(),
                 "python": platform.python_version(),
                 "model_threads": 1,
-                "database": "actual sentinel persistent PostgreSQL 16.4"
-                if args.application
-                else "isolated tmpfs PostgreSQL 16.4",
+                "database": (
+                    "actual Supabase Session pooler PostgreSQL "
+                    + db.execute("SHOW server_version").fetchone()["server_version"]
+                    if args.external_database_target_sha256
+                    else (
+                        "actual sentinel persistent PostgreSQL 16.4"
+                        if args.application
+                        else "isolated tmpfs PostgreSQL 16.4"
+                    )
+                ),
                 "redis_server": "actual application Redis 7.2.5 AOF"
                 if args.application
                 else "isolated Redis 7.2.5",

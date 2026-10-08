@@ -1,6 +1,6 @@
-# Task 6 preparation
+# Scoring Readiness
 
-Historical preparation checkpoint. Current status is in `task-6-verification-record.md`:
+Historical preparation checkpoint. Current status is in `scoring-verification.md`:
 the connected worker now exists and Task 5 passed its authorized final test.
 Task 6 is still incomplete and application scoring is NOT activated. The storage
 details below describe the earlier preparation stage, not the current worker.
@@ -33,7 +33,7 @@ public tables and no `pgmigrations` ledger. The owner subsequently explicitly
 confirmed `sentinel` as the target. After backup and configuration alignment,
 the repository runner applied migrations 0001-0006. Ledger, permissions and
 actual-target API retrieval were verified. No application data or volumes were
-reset. Recovery proof is in `task-6-execution-and-recovery.md`.
+reset. Recovery proof is in `scoring-execution-recovery.md`.
 
 Earlier preparation migrations were applied with the repository runner to isolated
 `sentinel_task4_test` on port 25432; test Redis is port 26379. Fixtures use
@@ -65,11 +65,11 @@ The response is no-store and selects only safe fields from PostgreSQL.
 Execution is now stored separately as allowed/rejected/pending_review, with
 immutable human resolution where applicable. Expired processing has no execution.
 The new review API and approved deadline semantics are documented in
-`task-6-execution-and-recovery.md`. Result lookup also exposes review evidence.
+`scoring-execution-recovery.md`. Result lookup also exposes review evidence.
 `GET /ready/scoring` always returns 503 during preparation.
 Existing `/health` is process liveness; `/ready` still checks infrastructure,
 not model approval. No model is downloaded, trained or substituted on startup.
-OpenAPI and `task-6-requests.http` describe the actual implemented routes.
+OpenAPI and `transaction-replay.http` describe the actual implemented routes.
 
 ## Verification and remaining gates
 

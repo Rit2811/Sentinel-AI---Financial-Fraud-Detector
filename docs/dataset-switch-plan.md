@@ -64,7 +64,7 @@ holding activation until owner approvals, freeze, final test and DB readiness.
 - [ ] Task 6 actual-application zero-expiry normal/full-peak qualification and activation.
 
 See `task-5-final-test-record.md` for the completed model gate and
-`task-6-verification-record.md` for current application evidence. The protected
+`scoring-verification.md` for current application evidence. The protected
 APIs and connected worker are implemented and actual actions were verified;
 general activation remains held on persistent-database performance. The separate
 four-model ensemble remains a development track, not the selected frozen scorer.

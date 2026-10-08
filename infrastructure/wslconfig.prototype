@@ -1,4 +1,4 @@
-# Proposed local WSL 2 memory cap for the owner development machine.
+# Local development WSL 2 memory profile for the owner machine.
 # Install as the user profile .wslconfig only with owner authorization.
 [wsl2]
 memory=2GB

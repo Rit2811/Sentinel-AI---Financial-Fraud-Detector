@@ -93,6 +93,59 @@ async function receipt(eventId) {
   ).rows[0]
 }
 
+test.each([false, true])(
+  'one-connection publisher records rollback and recovers uncertain acceptance=%s',
+  async (uncertain) => {
+    const event = sparkovReplay()
+    await ingest(event)
+    const single = new pg.Pool({
+      connectionString: requireTestDatabaseUrl(process.env.TEST_DATABASE_URL),
+      max: 1,
+      connectionTimeoutMillis: 1000,
+    })
+    try {
+      const failing = {
+        xAdd: async (...args) => {
+          if (uncertain) await redis.xAdd(...args)
+          throw new Error('injected_transport_failure')
+        },
+      }
+      expect(
+        await publishOutboxBatch({ ...context, pool: single, redis: failing }),
+      ).toBe(1)
+      const row = (
+        await pool.query(
+          'SELECT status,attempt_count FROM authorization_event_outbox WHERE event_id=$1',
+          [event.event_id],
+        )
+      ).rows[0]
+      expect(row).toEqual({ status: 'pending', attempt_count: 1 })
+      await pool.query(
+        'UPDATE authorization_event_outbox SET available_at=clock_timestamp() WHERE event_id=$1',
+        [event.event_id],
+      )
+      expect(await publishOutboxBatch({ ...context, pool: single })).toBe(1)
+      const messages = await redis.xRange(streamConfig.name, '-', '+')
+      expect(messages).toHaveLength(uncertain ? 2 : 1)
+      for (const message of messages)
+        expect(JSON.parse(message.message.envelope).event_id).toBe(
+          event.event_id,
+        )
+      await consumeOnce(context)
+      expect(
+        (
+          await pool.query(
+            'SELECT count(*)::int AS n FROM stream_processing_receipts WHERE event_id=$1',
+            [event.event_id],
+          )
+        ).rows[0].n,
+      ).toBe(1)
+    } finally {
+      await single.end()
+    }
+  },
+)
+
 test('v1 and v2 reach Redis and durable receipts; duplicate delivery keeps the first receipt', async () => {
   const v2 = sparkovReplay()
   await ingest(cardNotPresent())
@@ -414,8 +467,24 @@ test('native Redis timeout closes the connection, rolls back, then reconnects an
   bounded.on('error', () => {})
   await bounded.connect()
   try {
-    await redis.sendCommand(['CLIENT', 'PAUSE', '250', 'ALL'])
-    await publishOutboxBatch({ ...context, redis: bounded })
+    const paused = {
+      get isOpen() {
+        return bounded.isOpen
+      },
+      destroy() {
+        bounded.destroy()
+      },
+      withCommandOptions(options) {
+        const command = bounded.withCommandOptions(options)
+        return {
+          xAdd: async (...args) => {
+            await redis.sendCommand(['CLIENT', 'PAUSE', '250', 'ALL'])
+            return command.xAdd(...args)
+          },
+        }
+      },
+    }
+    await publishOutboxBatch({ ...context, redis: paused })
     expect(bounded.isOpen).toBe(false)
     expect(
       (await pool.query('SELECT status FROM authorization_event_outbox'))

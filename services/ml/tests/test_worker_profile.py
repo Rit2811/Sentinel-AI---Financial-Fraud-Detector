@@ -3,8 +3,36 @@ from types import SimpleNamespace
 
 import pytest
 
-from fraud_ml.worker import ScoringWorker
+from fraud_ml.worker import ScoringWorker, dependency_failure, warm_scorer
 from fraud_ml.worker_benchmark import profile_summary
+from fraud_ml.features import FEATURE_ORDER
+
+
+def test_initialization_uses_only_frozen_feature_contract_and_creates_no_effects(
+    tmp_path,
+):
+    features = {key: 0 for key in FEATURE_ORDER}
+    features["merchant_category"] = "grocery_pos"
+    path = tmp_path / "references.json"
+    path.write_text(json.dumps({"score_cases": [{"features": features}]}))
+    original = path.read_bytes()
+    calls = []
+    scorer = SimpleNamespace(root=tmp_path, score=lambda rows: calls.append(rows))
+    warm_scorer(scorer)
+    assert len(calls) == 3
+    assert all(len(rows) == 1 and set(rows[0]) == set(FEATURE_ORDER) for rows in calls)
+    assert calls[0][0] == features and calls[2][0] == features
+    assert calls[1][0]["merchant_category"] == "__unseen_serving_category__"
+    assert path.read_bytes() == original
+
+
+def test_dependency_diagnostics_never_include_error_messages_or_credentials():
+    error = RuntimeError("postgresql://secret:password@private-host")
+    record = dependency_failure(error)
+    assert record["error_type"] == "RuntimeError"
+    assert record["sqlstate"] is None
+    assert "secret" not in json.dumps(record)
+    assert "password" not in json.dumps(record)
 
 
 def test_profiling_off_is_silent(monkeypatch, capsys):
@@ -42,6 +70,7 @@ def test_heartbeat_debounces_only_ready_updates(monkeypatch):
     worker = object.__new__(ScoringWorker)
     worker.run_id = "safe-run"
     worker._ready_heartbeat_at = 100
+    worker._stream_reconciled = True
     calls = []
     worker.db = SimpleNamespace(
         execute=lambda *args: SimpleNamespace(fetchone=lambda: {"blocked": False})

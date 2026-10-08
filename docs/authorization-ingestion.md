@@ -1,4 +1,4 @@
-# Task 3 authorization-event ingestion
+# Authorization Event Ingestion
 
 The local API accepts only synthetic/tokenized version 1 authorization events at
 `POST /api/v1/authorization-events`. It records accepted events, quarantines future-dated

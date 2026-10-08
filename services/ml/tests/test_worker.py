@@ -714,6 +714,170 @@ def test_unpublished_predecessor_cannot_be_overtaken(harness):
         assert {key: row[key] for key in FEATURE_ORDER} == offline.transform(event)
 
 
+def test_terminal_delivery_only_reads_durable_state_before_ack(harness, monkeypatch):
+    worker, url = harness
+    event, _, _ = enqueue(worker)
+    worker.drain()
+    messages = worker.redis.xreadgroup(
+        worker.group, "terminal-read", {worker.stream: ">"}
+    )[0][1]
+    original, commands = worker.db.execute, []
+
+    def execute(query, *args, **kwargs):
+        commands.append(str(query))
+        return original(query, *args, **kwargs)
+
+    monkeypatch.setattr(worker.db, "execute", execute)
+
+    def acknowledge(*args):
+        with psycopg.connect(url, row_factory=dict_row) as peer:
+            assert (
+                peer.execute(
+                    "SELECT count(*) AS n FROM simulated_executions WHERE run_id=%s",
+                    (worker.run_id,),
+                ).fetchone()["n"]
+                == 1
+            )
+        return 1
+
+    monkeypatch.setattr(worker.redis, "xack", acknowledge)
+    worker.delivery_batch(messages)
+    assert len(commands) == 1 and commands[0].lstrip().startswith("SELECT")
+    assert state(worker, event)["status"] == "scored"
+
+
+def test_delivery_cannot_acknowledge_inside_uncommitted_transaction(
+    harness, monkeypatch
+):
+    worker, _ = harness
+    monkeypatch.setattr(
+        worker.redis,
+        "xack",
+        lambda *_: pytest.fail("Uncommitted work must not be acknowledged"),
+    )
+    with worker.db.transaction():
+        with pytest.raises(ValueError, match="durable boundary"):
+            worker.delivery_batch([("1-0", {"envelope": "invalid"})])
+
+
+def test_implicit_finalization_commit_deadline_rolls_back_all_effects(harness):
+    worker, _ = harness
+    name = "a_delay_finalization_" + uuid4().hex
+    worker.db.execute(
+        "CREATE FUNCTION pg_temp.delay_finalization() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN PERFORM pg_sleep(1.1); RETURN NULL; END $$"
+    )
+    worker.db.execute(
+        f"CREATE CONSTRAINT TRIGGER {name} AFTER INSERT ON scoring_results DEFERRABLE INITIALLY DEFERRED FOR EACH ROW WHEN (NEW.run_id='{worker.run_id}'::uuid) EXECUTE FUNCTION pg_temp.delay_finalization()"
+    )
+    try:
+        event, _, _ = enqueue(worker)
+        worker.drain()
+        assert state(worker, event)["status"] == "expired"
+        for table, expected in [
+            ("scoring_predictions", 1),
+            ("scoring_results", 0),
+            ("simulated_executions", 0),
+        ]:
+            assert (
+                worker.db.execute(
+                    f"SELECT count(*) AS n FROM {table} WHERE run_id=%s",
+                    (worker.run_id,),
+                ).fetchone()["n"]
+                == expected
+            )
+    finally:
+        worker.db.execute(f"DROP TRIGGER {name} ON scoring_results")
+
+
+def test_checkpoint_writer_bounds_and_run_identity_are_enforced(harness):
+    worker, _ = harness
+    for rows, deadline, message in [
+        ([], 1000, "one to four"),
+        ([{}] * 5, 1000, "one to four"),
+        ([{}], 2000, "immutable run"),
+    ]:
+        with pytest.raises(psycopg.errors.RaiseException, match=message):
+            worker.db.execute(
+                "SELECT * FROM prepare_scoring_checkpoints(%s,%s,%s,'sparkov-pit-v1',%s,%s)",
+                (
+                    worker.run_id,
+                    worker.package_pin,
+                    worker.scorer.policy["policy_version"],
+                    deadline,
+                    Jsonb(rows),
+                ),
+            )
+    assert (
+        worker.db.execute(
+            "SELECT count(*) AS n FROM scoring_jobs WHERE run_id=%s", (worker.run_id,)
+        ).fetchone()["n"]
+        == 0
+    )
+
+
+def test_checkpoint_writer_has_no_public_execute_privilege(harness):
+    worker, _ = harness
+    assert (
+        worker.db.execute(
+            "SELECT count(*) AS n FROM pg_proc p CROSS JOIN LATERAL aclexplode(coalesce(p.proacl,acldefault('f',p.proowner))) a WHERE p.oid='public.prepare_scoring_checkpoints(uuid,text,text,text,integer,jsonb)'::regprocedure AND a.grantee=0 AND a.privilege_type='EXECUTE'"
+        ).fetchone()["n"]
+        == 0
+    )
+
+
+def test_uncertain_implicit_finalization_reply_recovers_without_duplicate_effects(
+    harness, monkeypatch
+):
+    worker, url = harness
+    event, _, _ = enqueue(worker)
+    original = worker.db.execute
+
+    def lose_reply(query, *args, **kwargs):
+        result = original(query, *args, **kwargs)
+        if "INSERT INTO scoring_results" in str(query):
+            raise psycopg.OperationalError("Lost implicit commit reply")
+        return result
+
+    monkeypatch.setattr(worker.db, "execute", lose_reply)
+    with pytest.raises(psycopg.OperationalError, match="implicit commit reply"):
+        worker.drain()
+    monkeypatch.setattr(worker.db, "execute", original)
+    worker.close()
+    resumed = ScoringWorker(
+        psycopg.connect(url, autocommit=True, row_factory=dict_row),
+        worker.redis,
+        FixtureScorer(),
+        worker.run_id,
+        worker.package_pin,
+        mode="fixture",
+        stream=worker.stream,
+    )
+    try:
+        monkeypatch.setattr(
+            resumed.scorer,
+            "score",
+            lambda _: pytest.fail("Committed result must not be rescored"),
+        )
+        resumed.cycle()
+        assert state(resumed, event)["status"] == "scored"
+        assert resumed.redis.xpending(resumed.stream, resumed.group)["pending"] == 0
+        for table in (
+            "scoring_history",
+            "scoring_predictions",
+            "scoring_results",
+            "simulated_executions",
+        ):
+            assert (
+                resumed.db.execute(
+                    f"SELECT count(*) AS n FROM {table} WHERE run_id=%s",
+                    (resumed.run_id,),
+                ).fetchone()["n"]
+                == 1
+            )
+    finally:
+        resumed.close()
+
+
 def test_delivery_batch_ack_loss_preserves_durable_audits(harness, monkeypatch):
     worker, url = harness
     for _ in range(2):
@@ -961,6 +1125,52 @@ def test_late_inference_expires_without_action_and_still_contributes_history(har
     )
 
 
+def test_prediction_deadline_race_recovers_without_worker_restart(harness, monkeypatch):
+    worker, _ = harness
+    event, _, _ = enqueue(worker)
+    original = worker.db.execute
+    delayed = [False]
+
+    def cross_deadline(query, *args, **kwargs):
+        if "INSERT INTO scoring_predictions" in query and not delayed[0]:
+            delayed[0] = True
+            time.sleep(1.05)
+        return original(query, *args, **kwargs)
+
+    monkeypatch.setattr(worker.db, "execute", cross_deadline)
+    worker.cycle()
+    assert delayed[0]
+    assert state(worker, event)["status"] == "expired"
+    assert worker.owns_lock and not worker.db.closed
+    for table in ("scoring_history", "scoring_feature_snapshots"):
+        assert (
+            original(
+                f"SELECT count(*) AS n FROM {table} WHERE run_id=%s",
+                (worker.run_id,),
+            ).fetchone()["n"]
+            == 1
+        )
+    for table in ("scoring_results", "simulated_executions"):
+        assert (
+            original(
+                f"SELECT count(*) AS n FROM {table} WHERE run_id=%s",
+                (worker.run_id,),
+            ).fetchone()["n"]
+            == 0
+        )
+    monkeypatch.setattr(worker.db, "execute", original)
+    second, _, _ = enqueue(worker, offset=1)
+    worker.cycle()
+    assert state(worker, second)["status"] == "scored"
+    assert (
+        original(
+            "SELECT prior_count_24h FROM scoring_feature_snapshots WHERE run_id=%s AND event_id=%s",
+            (worker.run_id, second["event_id"]),
+        ).fetchone()["prior_count_24h"]
+        == 1
+    )
+
+
 def test_poison_payload_is_durably_rejected_before_ack(harness):
     worker, _ = harness
     worker.redis.xadd(
@@ -1021,6 +1231,39 @@ def test_burst_batch_preserves_individual_history_and_decisions(harness, monkeyp
     assert state(worker, second)["status"] == "scored"
     assert len(batches) == 1 and len(batches[0]) == 2
     assert [row["prior_count_24h"] for row in batches[0]] == [0, 1]
+
+
+def test_bounded_batch_same_card_equal_times_and_windows_match_reference(harness):
+    worker, _ = harness
+    offline = FeatureStream()
+    events = [
+        enqueue(worker, offset=offset, amount=amount)[0]
+        for offset, amount in ((0, 1234), (0, 2500), (3600, 3500), (86400, 4500))
+    ]
+    worker.drain()
+    for sequence, event in enumerate(events):
+        snapshot = worker.db.execute(
+            "SELECT * FROM scoring_feature_snapshots WHERE run_id=%s AND event_id=%s",
+            (worker.run_id, event["event_id"]),
+        ).fetchone()
+        assert {name: snapshot[name] for name in FEATURE_ORDER} == offline.transform(
+            event
+        )
+        assert snapshot["history_sequence"] == sequence
+        assert state(worker, event)["status"] == "scored"
+    worker.drain()
+    for table in (
+        "scoring_history",
+        "scoring_feature_snapshots",
+        "scoring_results",
+        "simulated_executions",
+    ):
+        assert (
+            worker.db.execute(
+                f"SELECT count(*) AS n FROM {table} WHERE run_id=%s", (worker.run_id,)
+            ).fetchone()["n"]
+            == 4
+        )
 
 
 def test_batch_expiry_is_per_transaction_without_discarding_timely_peer(harness):
@@ -1237,7 +1480,7 @@ def test_real_redis_restart_expires_backlog_without_execution(harness):
     worker, _ = harness
     event, _, _ = enqueue(worker)
     result = subprocess.run(
-        ["docker", "restart", "sentinel-task4-test-redis-1"],
+        ["docker", "restart", "sentinel-test-redis-1"],
         capture_output=True,
         text=True,
         timeout=60,

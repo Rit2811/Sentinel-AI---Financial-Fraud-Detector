@@ -25,10 +25,13 @@ if (process.env.CRASH_STDIN_START === '1') {
 const wrapper = {
   connect: async () => {
     const client = await pool.connect()
+    let publicationWrites = 0
     return {
       release: (...args) => client.release(...args),
       query: async (...args) => {
-        if (args[0] === 'COMMIT') {
+        if (args[0].includes("SET status='published'")) publicationWrites += 1
+        if (args[0] === 'ROLLBACK') publicationWrites = 0
+        if (args[0] === 'COMMIT' && publicationWrites > 0) {
           if (process.send) process.send('before_commit')
           if (process.env.CRASH_STDOUT_BOUNDARY === '1')
             process.stdout.write('before_commit\n')
