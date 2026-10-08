@@ -1,0 +1,6 @@
+# Independent project and dedicated volumes; never use the owner's env/volumes.
+name: sentinel-team
+services:
+  web:
+    environment:
+      SENTINEL_API_PROXY_TARGET: http://api:8000

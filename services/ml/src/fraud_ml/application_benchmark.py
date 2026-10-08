@@ -25,6 +25,43 @@ def inspect_container(name):
     ]
 
 
+def verify_application_containers(metadata, candidate_measurement, external):
+    containers = [
+        ("sentinel-ai-scoring-worker-1", "worker_image_id"),
+        ("sentinel-ai-api-1", "backend_image_id"),
+        ("sentinel-ai-publisher-1", "backend_image_id"),
+        ("sentinel-ai-redis-1", None),
+    ]
+    if not external:
+        containers.append(("sentinel-ai-postgres-1", None))
+    for container, key in containers:
+        detail = inspect_container(container)
+        if (
+            not detail["State"]["Running"]
+            or "sentinel-ai_default" not in detail["NetworkSettings"]["Networks"]
+        ):
+            raise ValueError("Application container/network not ready")
+        if key and detail["Image"] != metadata[key] and not candidate_measurement:
+            raise ValueError("Application image differs from qualified deployment")
+    if not external and not any(
+        volume.get("Name") == "sentinel-ai-postgres-data"
+        for volume in inspect_container("sentinel-ai-postgres-1")["Mounts"]
+    ):
+        raise ValueError("Original application PostgreSQL volume required")
+
+
+def deployed_bundle_path(worker, expected_manifest):
+    mount = next(
+        (item for item in worker["Mounts"] if item["Destination"] == "/model"), None
+    )
+    if not mount or mount.get("RW") is not False or mount.get("Type") != "bind":
+        raise ValueError("Application worker requires a read-only frozen bundle mount")
+    bundle = Path(mount["Source"])
+    if sha256(bundle / "manifest.json") != expected_manifest:
+        raise ValueError("Deployed bundle differs from the frozen package")
+    return bundle
+
+
 def verify_external_target(details, expected, certificate):
     for detail in details:
         env = dict(
@@ -85,10 +122,18 @@ def main(argv=None):
     parser.add_argument("--candidate-run-id", type=UUID)
     parser.add_argument("--qualification", action="store_true")
     parser.add_argument("--external-database-target-sha256")
+    parser.add_argument("--deployment-binding", type=Path)
     args = parser.parse_args(argv)
     deadline_trial = args.diagnostic_deadline_ms is not None
     candidate_measurement = args.diagnostic or args.qualification
     external = args.external_database_target_sha256
+    if args.deployment_binding and (
+        external
+        or deadline_trial
+        or not candidate_measurement
+        or not args.candidate_run_id
+    ):
+        parser.error("Local binding requires a held one-second candidate measurement")
     if external and (
         not candidate_measurement
         or not args.candidate_run_id
@@ -137,21 +182,9 @@ def main(argv=None):
         for line in environment.read_text(encoding="utf-8").splitlines()
         if line and not line.startswith("#")
     )
-    for container, key in [
-        ("sentinel-ai-scoring-worker-1", "worker_image_id"),
-        ("sentinel-ai-api-1", "backend_image_id"),
-        ("sentinel-ai-publisher-1", "backend_image_id"),
-        ("sentinel-ai-postgres-1", None),
-        ("sentinel-ai-redis-1", None),
-    ]:
-        detail = inspect_container(container)
-        if (
-            not detail["State"]["Running"]
-            or "sentinel-ai_default" not in detail["NetworkSettings"]["Networks"]
-        ):
-            raise ValueError("Application container/network not ready")
-        if key and detail["Image"] != metadata[key] and not candidate_measurement:
-            raise ValueError("Application image differs from qualified deployment")
+    verify_application_containers(
+        metadata, candidate_measurement, external or args.deployment_binding
+    )
     if candidate_measurement:
         metadata = dict(
             metadata,
@@ -163,17 +196,25 @@ def main(argv=None):
             != metadata["backend_image_id"]
         ):
             raise ValueError("API and publisher must use the same diagnostic image")
-    if not any(
-        volume.get("Name") == "sentinel-ai-postgres-data"
-        for volume in inspect_container("sentinel-ai-postgres-1")["Mounts"]
-    ):
-        raise ValueError("Original application PostgreSQL volume required")
     api_config = dict(
         value.split("=", 1)
         for value in inspect_container("sentinel-ai-api-1")["Config"]["Env"]
         if "=" in value
     )
     worker_config = inspect_container("sentinel-ai-scoring-worker-1")["Config"]["Env"]
+    local_binding = None
+    if args.deployment_binding:
+        from .deployment_binding import verify_local_binding
+
+        local_binding, bound_api = verify_local_binding(
+            args.deployment_binding, inspect_container, metadata_path
+        )
+        if local_binding["run_id"] != str(args.candidate_run_id):
+            raise ValueError("Local measurement run differs from its binding")
+        config = dict(config, RESULT_API_TOKEN=bound_api["RESULT_API_TOKEN"])
+        metadata = dict(
+            metadata, database_target_sha256=local_binding["database_target_sha256"]
+        )
     certificate = root / "secrets/supabase-root.crt"
     if external:
         verify_external_target(
@@ -257,7 +298,13 @@ def main(argv=None):
             ]
         )
     for source, target in [
-        (Path(config["SCORING_BUNDLE_DIR"]), "/model"),
+        (
+            deployed_bundle_path(
+                inspect_container("sentinel-ai-scoring-worker-1"),
+                metadata["bundle_sha256"],
+            ),
+            "/model",
+        ),
         (
             diagnostic_metadata if candidate_measurement else metadata_path,
             "/application.json",
@@ -298,6 +345,10 @@ def main(argv=None):
         command.append("--profile-database-waits")
     if external:
         command.extend(["--external-database-target-sha256", external])
+    if local_binding:
+        command.extend(
+            ["--local-database-target-sha256", local_binding["database_target_sha256"]]
+        )
     if deadline_trial:
         command.extend(["--diagnostic-deadline-ms", "2000"])
     try:
@@ -331,6 +382,13 @@ def main(argv=None):
             report["database_layout"] = (
                 "Supabase Session pooler; original local volume retained for rollback only"
             )
+        if local_binding:
+            report["database_target_sha256"] = local_binding["database_target_sha256"]
+            report["database_layout"] = (
+                "Bound laptop PostgreSQL 17 persistent application volume"
+            )
+            report["deployment_binding"] = str(args.deployment_binding.resolve())
+            report["deployment_binding_sha256"] = sha256(args.deployment_binding)
         report["environment"]["stage_profiling"] = profiling
         if profiling:
             log = output / "worker-profile.log"

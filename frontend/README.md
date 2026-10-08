@@ -1,7 +1,11 @@
-# Sentinel AI web dashboard
+# Operational Dashboard
 
-Responsive React/Vite operational dashboard for the Sentinel AI interface. It reads non-sensitive authorization-ingestion and stream-processing aggregates from `GET /api/v1/dashboard`, refreshes automatically, and supports manual refresh and time-range selection. It does not claim fraud results because the offline ML ensemble is not connected to live API scoring.
+React/Vite dashboard for non-sensitive authorization-ingestion and stream activity.
+It refreshes aggregates from `GET /api/v1/dashboard` and supports range selection.
+Scoring/review routes are provided by the backend, but the dashboard is not a
+complete analyst case-management interface.
 
-Reusable UI lives in `src/components/`, visible copy lives in `src/content/`, API access lives in `src/api/`, server-state lifecycle lives in `src/hooks/`, response-to-view mapping lives in `src/adapters/`, chart/runtime settings live in `src/config/`, icons live in `src/icons/`, and all color values and design tokens live in `src/theme.js`.
-
-The Docker image uses Node only as a build stage. A pinned Nginx runtime serves the compiled assets, applies security and cache headers, provides SPA fallback, and proxies `/api/` to the backend over the Compose network.
+Use [teammate setup](../docs/teammate-setup.md) for Docker operation. API proxy
+settings are server-side; PostgreSQL/Redis passwords and result/review tokens must
+never be embedded in React builds. The teammate profile targets `http://api:8000`
+on its private Compose network.

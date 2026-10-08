@@ -311,3 +311,24 @@ def test_parallel_database_history_survives_stream_loss(parallel_harness):
     ).fetchone()
     assert vector["prior_count_24h"] == 1
     assert state(worker, second)["status"] == "scored"
+
+
+def test_reserved_card_outside_retry_limit_prevents_overtaking(parallel_harness):
+    worker, _, _ = parallel_harness
+    for card in ("a", "b", "c", "d", "e"):
+        event = enqueue(worker, card=card * 64)[0]
+        row = worker.db.execute(
+            """SELECT e.*,o.envelope,e.created_at AS accepted_at
+            FROM authorization_events e JOIN authorization_event_outbox o USING(event_id)
+            WHERE event_id=%s""",
+            (event["event_id"],),
+        ).fetchone()
+        worker.assign(row)
+    worker.db.execute(
+        "UPDATE scoring_jobs SET next_attempt_at=clock_timestamp()+interval '10 seconds' WHERE run_id=%s",
+        (worker.run_id,),
+    )
+    later = enqueue(worker, card="e" * 64, offset=1)[0]
+    worker.parallel.drain(4)
+    assert state(worker, later) is None
+    assert not worker.parallel.active

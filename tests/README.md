@@ -1,3 +1,9 @@
 # Tests
 
-Cross-component verification is driven by `make verify`. Task 3 backend unit and PostgreSQL integration tests live with the API under `backend/tests/`; exact Thunder Client acceptance cases are documented in `docs/task-3-authorization-ingestion.md`.
+Backend tests live under `backend/tests`, frontend tests under `frontend/src`,
+and Python feature/scoring tests under `services/ml/tests`. Database/Redis
+integration tests require the explicitly guarded isolated fixture stack.
+
+Never run reset, truncate, rollback or recovery-fixture setup against application
+data. Keep test results private; runtime startup instructions are in
+[teammate setup](../docs/teammate-setup.md).

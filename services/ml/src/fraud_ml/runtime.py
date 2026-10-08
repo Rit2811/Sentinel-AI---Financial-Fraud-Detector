@@ -118,6 +118,7 @@ def main(argv=None):
     parser.add_argument("--database-target-sha256")
     parser.add_argument("--deployment-environment", type=Path)
     parser.add_argument("--deployment-metadata", type=Path)
+    parser.add_argument("--deployment-binding", type=Path)
     args = parser.parse_args(argv)
     scorer = FrozenScorer(args.bundle, args.bundle_sha256)
     scorer.verify_references()
@@ -189,11 +190,21 @@ def main(argv=None):
                 "sentinel-ai-scoring-worker-1",
             )
         ]
-        verify_external_target(
-            details,
-            args.database_target_sha256,
-            repo_root / "secrets/supabase-root.crt",
-        )
+        local_binding = None
+        if args.deployment_binding:
+            from .deployment_binding import verify_local_binding
+
+            local_binding, _ = verify_local_binding(
+                args.deployment_binding, inspect_container, metadata
+            )
+            if local_binding["database_target_sha256"] != args.database_target_sha256:
+                raise ValueError("Qualification target differs from local binding")
+        else:
+            verify_external_target(
+                details,
+                args.database_target_sha256,
+                repo_root / "secrets/supabase-root.crt",
+            )
         api = dict(
             value.split("=", 1) for value in details[0]["Config"]["Env"] if "=" in value
         )
@@ -228,6 +239,13 @@ def main(argv=None):
             activation_authorized=False,
             pipeline_configuration=peak.get("pipeline_configuration"),
         )
+        if local_binding:
+            qualified.update(
+                deployment_layout=local_binding["layout"],
+                deployment_binding=str(args.deployment_binding.resolve()),
+                deployment_binding_sha256=sha256(args.deployment_binding),
+                reviewer_identity=api["REVIEWER_ID"],
+            )
         with output.open("x", encoding="utf-8") as stream:
             json.dump(qualified, stream, indent=2)
         print(

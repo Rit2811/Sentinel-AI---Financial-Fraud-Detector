@@ -127,3 +127,73 @@ def test_application_client_rejects_wrong_deployment_before_start(
     with pytest.raises(ValueError):
         benchmark.main(["--tps", "5", "--seconds", "600"])
     assert not (ml / "reports").exists()
+
+
+@pytest.mark.parametrize("external", [None, "a" * 64])
+def test_local_postgres_is_required_only_for_local_measurement(monkeypatch, external):
+    inspected = []
+
+    def inspect(name):
+        inspected.append(name)
+        if external and name == "sentinel-ai-postgres-1":
+            raise AssertionError("Cloud measurement must not inspect local PostgreSQL")
+        return {
+            "State": {"Running": True},
+            "Image": "expected",
+            "NetworkSettings": {"Networks": {"sentinel-ai_default": {}}},
+            "Mounts": [{"Name": "sentinel-ai-postgres-data"}],
+        }
+
+    monkeypatch.setattr(benchmark, "inspect_container", inspect)
+    benchmark.verify_application_containers(
+        {"worker_image_id": "expected", "backend_image_id": "expected"},
+        False,
+        external,
+    )
+    assert ("sentinel-ai-postgres-1" in inspected) is (external is None)
+
+
+@pytest.mark.parametrize("wrong", ["stopped", "network", "image", "volume"])
+def test_local_container_guards_remain_enforced(monkeypatch, wrong):
+    def inspect(name):
+        return {
+            "State": {"Running": wrong != "stopped"},
+            "Image": "other" if wrong == "image" else "expected",
+            "NetworkSettings": {
+                "Networks": {
+                    "other" if wrong == "network" else "sentinel-ai_default": {}
+                }
+            },
+            "Mounts": [
+                {"Name": "other" if wrong == "volume" else "sentinel-ai-postgres-data"}
+            ],
+        }
+
+    monkeypatch.setattr(benchmark, "inspect_container", inspect)
+    with pytest.raises(ValueError):
+        benchmark.verify_application_containers(
+            {"worker_image_id": "expected", "backend_image_id": "expected"},
+            False,
+            None,
+        )
+
+
+@pytest.mark.parametrize("wrong", [None, "writable", "volume", "manifest", "missing"])
+def test_relocated_bundle_uses_verified_read_only_worker_mount(tmp_path, wrong):
+    bundle = tmp_path / "relocated-model"
+    bundle.mkdir()
+    manifest = bundle / "manifest.json"
+    manifest.write_text("frozen-manifest")
+    mount = {
+        "Destination": "/model",
+        "Source": str(bundle),
+        "RW": wrong == "writable",
+        "Type": "volume" if wrong == "volume" else "bind",
+    }
+    worker = {"Mounts": [] if wrong == "missing" else [mount]}
+    pin = "a" * 64 if wrong == "manifest" else sha256(manifest)
+    if wrong:
+        with pytest.raises(ValueError):
+            benchmark.deployed_bundle_path(worker, pin)
+    else:
+        assert benchmark.deployed_bundle_path(worker, pin) == bundle
