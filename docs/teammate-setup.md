@@ -76,9 +76,9 @@ teammate tags. The names in the archive may differ; IDs must match:
 
 ```powershell
 docker load -i 'D:\Private Transfer\sentinel-approved-images.tar'
-docker tag sha256:692b5d9e6657d32ace5aa4e70286105b0db7ef2f755fc78b9975e14970559361 sentinel-ai-api:teammate
-docker tag sha256:2eb38fae2ef49430af0088743d78e60e8845cac4acdb9d199457f1b458500d23 sentinel-ai-scoring-worker:teammate
-docker tag sha256:fcbaa797517ceb88a9c1548a310e1b2bcd78a6e91d89c9f88a4a31dcc06095d5 sentinel-ai-web:teammate
+docker tag sha256:692b5d9e6657d32ace5aa4e70286105b0db7ef2f755fc78b9975e14970559361 sentinel-ai-api:development
+docker tag sha256:2eb38fae2ef49430af0088743d78e60e8845cac4acdb9d199457f1b458500d23 sentinel-ai-scoring-worker:random-forest-development
+docker tag sha256:fcbaa797517ceb88a9c1548a310e1b2bcd78a6e91d89c9f88a4a31dcc06095d5 sentinel-ai-dashboard:development
 ```
 
 The owner can prepare that image archive locally with `docker image save -o
@@ -109,11 +109,18 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/teammate.ps1 status
 
 The helper uses project `sentinel-team`, new persistent volumes
 `sentinel-team-postgres-data` / `sentinel-team-redis-data`, and the three Compose
-files `compose.yaml`, `compose.laptop-local.yaml`, `compose.teammate.yaml`.
+files `compose.yaml`, `compose.postgres-local.yaml`, `compose.teammate.yaml`.
 It starts PG/Redis, waits for API forward migrations, starts publisher/dashboard/
 scorer, and checks scorer initialization/reconciliation before ingestion.
 The optional proof consumer remains off: **six services**, not 17.
 The database is fresh and initially empty; each teammate sees their own events.
+
+Container names follow Compose's `<project>-<service>-<instance>` convention:
+`sentinel-team-api-1`, `sentinel-team-publisher-1`,
+`sentinel-team-scoring-worker-1`, `sentinel-team-dashboard-1`,
+`sentinel-team-postgres-1`, `sentinel-team-redis-1`.
+Repositories name the component; tags distinguish application/development use
+or the Random Forest scorer. Official database/Redis images retain version tags.
 
 | Endpoint | Address |
 | --- | --- |
@@ -160,13 +167,13 @@ On other shells, the equivalent Compose prefix is:
 
 ```bash
 docker compose -p sentinel-team --env-file .env.teammate.local \
-  -f infrastructure/compose.yaml -f infrastructure/compose.laptop-local.yaml \
+  -f infrastructure/compose.yaml -f infrastructure/compose.postgres-local.yaml \
   -f infrastructure/compose.teammate.yaml --profile scoring
 ```
 
-Append commands such as `build api web scoring-worker`, `up -d --no-deps
+Append commands such as `build api dashboard scoring-worker`, `up -d --no-deps
 --no-build --wait postgres redis`, then `up -d --no-deps --no-build --wait api`,
-then `up -d --no-deps --no-build --wait publisher web scoring-worker`. Verify
+then `up -d --no-deps --no-build --wait publisher dashboard scoring-worker`. Verify
 scorer health before sending events. Use `stop` to preserve volumes.
 
 ## Code Changes and Sharing

@@ -11,7 +11,7 @@ $RepoRoot = Split-Path -Parent $PSScriptRoot
 $EnvPath = Join-Path $RepoRoot '.env.teammate.local'
 if (-not (Test-Path -LiteralPath $EnvPath)) { throw 'Create .env.teammate.local with new-teammate-env.ps1 first.' }
 $Base = @('compose', '-p', 'sentinel-team', '--env-file', $EnvPath,
-    '-f', 'infrastructure/compose.yaml', '-f', 'infrastructure/compose.laptop-local.yaml',
+    '-f', 'infrastructure/compose.yaml', '-f', 'infrastructure/compose.postgres-local.yaml',
     '-f', 'infrastructure/compose.teammate.yaml')
 if ($Scoring -or $Operation -in @('stop', 'status', 'health')) { $Base += @('--profile', 'scoring') }
 
@@ -39,7 +39,7 @@ try {
         }
     }
     if ($Operation -eq 'build') {
-        $Services = @('api', 'web')
+        $Services = @('api', 'dashboard')
         if ($Scoring) { $Services += 'scoring-worker' }
         Invoke-TeamCompose (@('build') + $Services)
     }
@@ -57,7 +57,7 @@ try {
         Invoke-TeamCompose @('up', '-d', '--no-deps', '--no-build', '--wait', '--wait-timeout', '60', 'postgres', 'redis')
         # Wait for the API's forward migration/startup before launching consumers.
         Invoke-TeamCompose @('up', '-d', '--no-deps', '--no-build', '--wait', '--wait-timeout', '60', 'api')
-        $Services = @('publisher', 'web')
+        $Services = @('publisher', 'dashboard')
         if ($Scoring) { $Services += 'scoring-worker' }
         Invoke-TeamCompose (@('up', '-d', '--no-deps', '--no-build', '--wait', '--wait-timeout', '60') + $Services)
         if ($Scoring) {
@@ -77,8 +77,8 @@ try {
     elseif ($Operation -eq 'status') { Invoke-TeamCompose @('ps') }
     else {
         foreach ($Check in @(@{Name='Infrastructure';Port=$Config.services.api.ports[0].published;Path='/ready'},
-            @{Name='Dashboard';Port=$Config.services.web.ports[0].published;Path='/'},
-            @{Name='Dashboard data';Port=$Config.services.web.ports[0].published;Path='/api/v1/dashboard?range=24h'})) {
+            @{Name='Dashboard';Port=$Config.services.dashboard.ports[0].published;Path='/'},
+            @{Name='Dashboard data';Port=$Config.services.dashboard.ports[0].published;Path='/api/v1/dashboard?range=24h'})) {
             $Response = Invoke-WebRequest -UseBasicParsing -Uri ('http://127.0.0.1:' + $Check.Port + $Check.Path)
             Write-Output ($Check.Name + ': HTTP ' + $Response.StatusCode)
         }

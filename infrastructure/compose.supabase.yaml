@@ -1,4 +1,4 @@
-# Apply only after verified import; no database credentials enter the web service.
+# Apply only after verified import; no database credentials enter the dashboard.
 services:
   api:
     image: ${APPLICATION_API_IMAGE:-sentinel-ai-api:supabase}
@@ -35,6 +35,8 @@ services:
       POSTGRES_POOL_MAX: '1'
     volumes:
       - ../secrets/supabase-root.crt:/run/secrets/supabase-root.crt:ro
+  dashboard:
+    image: ${APPLICATION_DASHBOARD_IMAGE:-${APPLICATION_WEB_IMAGE:-sentinel-ai-dashboard:application}}
   scoring-worker:
     image: ${SCORING_WORKER_IMAGE:-sentinel-ai-scoring-worker:supabase}
     restart: 'no'

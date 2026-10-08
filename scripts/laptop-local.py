@@ -1,4 +1,4 @@
-"""Private-safe driver for the approved persistent laptop deployment."""
+"""Private-safe driver for the approved persistent PostgreSQL deployment."""
 
 import json
 import re
@@ -16,7 +16,9 @@ from fraud_ml.serving import sha256
 ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / "services/ml/reports/laptop-local"
 ART = ROOT / "services/ml/artifacts/laptop-local"
-ENV = ROOT / ".env.laptop-local.local"
+ENV = ROOT / ".env.application-runtime.local"
+if not ENV.exists():
+    ENV = ROOT / ".env.laptop-local.local"  # Preserved historical configuration.
 BASE = [
     "docker",
     "compose",
@@ -25,7 +27,7 @@ BASE = [
     "-f",
     "infrastructure/compose.yaml",
     "-f",
-    "infrastructure/compose.laptop-local.yaml",
+    "infrastructure/compose.postgres-local.yaml",
     "--profile",
     "scoring",
 ]
@@ -105,7 +107,7 @@ def prepare():
     text = ENV.read_text()
     updates = {
         "LOCAL_POSTGRES_IMAGE": "postgres:17-alpine@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24",
-        "SCORING_WORKER_IMAGE": "sentinel-ai-scoring-worker:laptop-local-pg17",
+        "SCORING_WORKER_IMAGE": "sentinel-ai-scoring-worker:random-forest",
         "APPLICATION_DATABASE_TARGET_SHA256": database_target_sha256(
             env["POSTGRES_URL"]
         ),
@@ -119,7 +121,7 @@ def prepare():
         )
     ENV.write_text(text)
     (ART / "Dockerfile").write_text(
-        "FROM sentinel-ai-scoring-worker:mumbai-admission-read\nCOPY src/fraud_ml/database.py /app/.venv/lib/python3.12/site-packages/fraud_ml/database.py\n"
+        "FROM sentinel-ai-scoring-worker:admission-optimized\nCOPY src/fraud_ml/database.py /app/.venv/lib/python3.12/site-packages/fraud_ml/database.py\n"
     )
     save(
         "preparation.json",
@@ -158,7 +160,7 @@ def provision():
                 "volume",
                 "create",
                 "--label",
-                "sentinel.purpose=laptop-local-application",
+                "sentinel.purpose=postgres-application",
                 env[key],
             ]
         )
@@ -323,7 +325,7 @@ def provision():
             "api",
             "publisher",
             "scoring-worker",
-            "web",
+            "dashboard",
         ]
     )
     bind()

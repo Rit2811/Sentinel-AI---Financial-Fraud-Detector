@@ -1,4 +1,4 @@
-# Approved laptop-local deployment; apply AFTER the base file, never Supabase.
+# Persistent local PostgreSQL application; apply AFTER the base file, never Supabase.
 services:
   postgres:
     image: ${LOCAL_POSTGRES_IMAGE:?Pinned PG17 image required}
@@ -27,8 +27,8 @@ services:
       PUBLISHER_PROFILE: '1'
   consumer:
     profiles: [proof-consumer]
-  web:
-    image: ${APPLICATION_WEB_IMAGE:?Preserved dashboard image required}
+  dashboard:
+    image: ${APPLICATION_DASHBOARD_IMAGE:-${APPLICATION_WEB_IMAGE:-sentinel-ai-dashboard:application}}
   scoring-worker:
     image: ${SCORING_WORKER_IMAGE:?Pinned local worker image required}
     restart: 'no'
