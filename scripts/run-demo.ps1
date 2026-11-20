@@ -1,4 +1,4 @@
-﻿# Quick Launcher for Evaluator Live Simulation Demo
+# Quick Launcher for Evaluator Live Simulation Demo
 Write-Host "==========================================================" -ForegroundColor Cyan
 Write-Host "🚀 Sentinel AI - Interactive Live Simulation Launcher" -ForegroundColor Cyan
 Write-Host "==========================================================" -ForegroundColor Cyan
