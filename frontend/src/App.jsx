@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react'
 
 import { createDashboardViewModel } from './adapters/dashboardViewModel'
 import { ActivityPanel } from './components/ActivityPanel'
+import { CreditCardSimulator } from './components/CreditCardSimulator'
 import { DashboardHeader } from './components/DashboardHeader'
 import { DashboardState } from './components/DashboardState'
 import { DetectionStatus } from './components/DetectionStatus'
@@ -17,7 +18,8 @@ function dashboardStatus({ data, error, isRefreshing }) {
   return dashboardContent.statuses.connecting
 }
 
-function App() {
+function App({ defaultTab = 'simulator' }) {
+  const [activeTab, setActiveTab] = useState(defaultTab)
   const [activeRange, setActiveRange] = useState(
     runtimeConfig.initialDashboardRange,
   )
@@ -42,56 +44,91 @@ function App() {
         updatedLabel={dashboardContent.updatedLabel}
       />
 
-      {isLoading && !viewModel && (
-        <DashboardState
-          message={dashboardContent.state.loadingMessage}
-          title={dashboardContent.state.loadingTitle}
-          type="loading"
-        />
-      )}
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.75rem', flexWrap: 'wrap', gap: '1rem' }}>
+        <div className="view-switcher" role="tablist" aria-label="System Navigation">
+          <button
+            type="button"
+            role="tab"
+            aria-selected={activeTab === 'simulator'}
+            className={`view-switcher-button ${activeTab === 'simulator' ? 'view-switcher-button--active' : ''}`}
+            onClick={() => setActiveTab('simulator')}
+          >
+            <span>💳</span> Credit Card Simulator
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={activeTab === 'dashboard'}
+            className={`view-switcher-button ${activeTab === 'dashboard' ? 'view-switcher-button--active' : ''}`}
+            onClick={() => setActiveTab('dashboard')}
+          >
+            <span>📊</span> Ingestion &amp; Stream Dashboard
+          </button>
+        </div>
 
-      {error && !viewModel && !isLoading && (
-        <DashboardState
-          message={dashboardContent.state.errorMessage}
-          onRetry={refresh}
-          retryLabel={dashboardContent.state.retryLabel}
-          title={dashboardContent.state.errorTitle}
-          type="error"
-        />
-      )}
+        {activeTab === 'simulator' && (
+          <span style={{ fontSize: '0.8rem', color: 'var(--color-text-secondary)', background: 'var(--color-surface)', padding: '0.4rem 0.8rem', borderRadius: 'var(--radius-pill)', border: '1px solid var(--color-border)' }}>
+            🟢 Model Status: Random Forest Sigmoid-Calibrated Simulation
+          </span>
+        )}
+      </div>
 
-      {viewModel && (
+      {activeTab === 'simulator' ? (
+        <CreditCardSimulator onTransactionProcessed={refresh} />
+      ) : (
         <>
-          <div className="dashboard__primary-grid">
-            <ActivityPanel
-              activeRange={activeRange}
-              chartLabel={dashboardContent.activityChartLabel}
-              data={viewModel.activity}
-              emptyMessage={dashboardContent.state.emptyMessage}
-              hasActivity={viewModel.hasActivity}
-              labels={dashboardContent.chartLabels}
-              onRangeChange={setActiveRange}
-              rangeLabel={dashboardContent.rangeControlLabel}
-              ranges={dashboardRanges}
-              title={dashboardContent.activityTitle}
-              tooltipIndex={viewModel.activity.length - 1}
-              tooltipLabels={dashboardContent.chartLabels}
+          {isLoading && !viewModel && (
+            <DashboardState
+              message={dashboardContent.state.loadingMessage}
+              title={dashboardContent.state.loadingTitle}
+              type="loading"
             />
-            <DetectionStatus
-              ariaLabel={dashboardContent.processingTitle}
-              details={viewModel.statusDetails}
-              emptyLabel={dashboardContent.noProcessingLabel}
-              label={dashboardContent.processingLabel}
-              score={viewModel.processingRate}
-              title={dashboardContent.processingTitle}
-            />
-          </div>
+          )}
 
-          <div className="dashboard__metric-grid">
-            {viewModel.metrics.map((metric) => (
-              <MetricCard key={metric.id} metric={metric} />
-            ))}
-          </div>
+          {error && !viewModel && !isLoading && (
+            <DashboardState
+              message={dashboardContent.state.errorMessage}
+              onRetry={refresh}
+              retryLabel={dashboardContent.state.retryLabel}
+              title={dashboardContent.state.errorTitle}
+              type="error"
+            />
+          )}
+
+          {viewModel && (
+            <>
+              <div className="dashboard__primary-grid">
+                <ActivityPanel
+                  activeRange={activeRange}
+                  chartLabel={dashboardContent.activityChartLabel}
+                  data={viewModel.activity}
+                  emptyMessage={dashboardContent.state.emptyMessage}
+                  hasActivity={viewModel.hasActivity}
+                  labels={dashboardContent.chartLabels}
+                  onRangeChange={setActiveRange}
+                  rangeLabel={dashboardContent.rangeControlLabel}
+                  ranges={dashboardRanges}
+                  title={dashboardContent.activityTitle}
+                  tooltipIndex={viewModel.activity.length - 1}
+                  tooltipLabels={dashboardContent.chartLabels}
+                />
+                <DetectionStatus
+                  ariaLabel={dashboardContent.processingTitle}
+                  details={viewModel.statusDetails}
+                  emptyLabel={dashboardContent.noProcessingLabel}
+                  label={dashboardContent.processingLabel}
+                  score={viewModel.processingRate}
+                  title={dashboardContent.processingTitle}
+                />
+              </div>
+
+              <div className="dashboard__metric-grid">
+                {viewModel.metrics.map((metric) => (
+                  <MetricCard key={metric.id} metric={metric} />
+                ))}
+              </div>
+            </>
+          )}
         </>
       )}
     </main>
