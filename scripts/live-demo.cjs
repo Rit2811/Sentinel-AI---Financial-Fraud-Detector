@@ -45,6 +45,19 @@ async function runLiveDemo() {
     await page.waitForTimeout(1000)
 
     // -------------------------------------------------------------
+    // DEMO: 3D Credit Card Backside & Frontside Flip View
+    // -------------------------------------------------------------
+    console.log('\n💳 Showing 3D Credit Card Backside View (Magnetic Stripe & CVV)...')
+    await page.click('.flip-toggle-btn')
+    await highlight('.card-side--back', '#0bb3a7')
+    await page.waitForTimeout(2000)
+
+    console.log('💳 Flipping card back to front view...')
+    await page.click('.flip-toggle-btn')
+    await highlight('.card-side--front', '#0bb3a7')
+    await page.waitForTimeout(1500)
+
+    // -------------------------------------------------------------
     // SCENARIO 1: Normal Everyday Grocery Run (Pass / Approved)
     // -------------------------------------------------------------
     console.log('\n🟢 Step 1: Testing Normal Everyday Purchase ($14.50 Grocery)...')
@@ -57,7 +70,8 @@ async function runLiveDemo() {
     await page.waitForSelector('.assessment-banner--approved', { timeout: 10000 })
     await highlight('.radial-gauge', '#08b45b')
     await highlight('.reasoning-panel', '#08b45b')
-    console.log('✅ Result: Transaction Approved (Risk Score: Low, Radial Gauge & Timeline Updated)')
+    await highlight('.patent-module-card', '#0bb3a7')
+    console.log('✅ Result: Transaction Approved (Risk Score: Low, Radial Gauge, Timeline & Patent Ensemble Updated)')
     await page.waitForTimeout(2500)
 
     // -------------------------------------------------------------
