@@ -6,6 +6,7 @@ import { applyTheme } from './theme'
 import './styles/global.css'
 import './styles/components.css'
 import './styles/dashboard.css'
+import './styles/simulator.css'
 
 const rootElement = document.getElementById('root')
 

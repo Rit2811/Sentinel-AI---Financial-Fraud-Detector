@@ -21,6 +21,8 @@ import { scoringReadiness } from './services/scoringReadinessService.js'
 import { createAuthorizationIngestionService } from './services/authorizationIngestionService.js'
 import { createDashboardService } from './services/dashboardService.js'
 import { createRejectedAttemptService } from './services/rejectedAttemptService.js'
+import { createPaymentSimulationService } from './services/paymentSimulationService.js'
+import { createPaymentSimulationRouter } from './routes/paymentSimulation.js'
 
 const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
@@ -58,6 +60,7 @@ export function createApp({
   recordRejectedAttempt: suppliedRecordRejectedAttempt,
   scoringResultService: suppliedScoringResultService,
   reviewResolutionService: suppliedReviewResolutionService,
+  paymentSimulationService: suppliedPaymentSimulationService,
   reviewAccess = {
     token: process.env.REVIEW_API_TOKEN,
     runId: process.env.SCORING_RUN_ID,
@@ -90,6 +93,9 @@ export function createApp({
   const dashboardService =
     suppliedDashboardService ?? createDashboardService(pool, log)
   const dashboardController = createDashboardController(dashboardService)
+  const paymentSimulation =
+    suppliedPaymentSimulationService ??
+    createPaymentSimulationService(pool, log)
 
   app.use((req, res, next) => {
     const supplied = req.get('X-Correlation-ID')
@@ -134,6 +140,7 @@ export function createApp({
   app.get('/openapi.json', (_req, res) => res.json(openApiDocument))
   app.use('/docs', swaggerUi.serve, swaggerUi.setup(openApiDocument))
   app.use('/api/v1/dashboard', createDashboardRouter(dashboardController))
+  app.use('/api/v1/simulate', createPaymentSimulationRouter(paymentSimulation))
   app.use(
     '/api/v1/transactions',
     createScoringResultsRouter(

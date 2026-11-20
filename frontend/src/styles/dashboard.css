@@ -464,11 +464,13 @@
 
   .activity-chart {
     overflow-x: auto;
+    max-width: 100%;
     padding-inline: 0;
   }
 
   .activity-chart__plot {
-    width: 50rem;
+    width: 100%;
+    min-width: 32rem;
   }
 
   .activity-chart__tooltip {

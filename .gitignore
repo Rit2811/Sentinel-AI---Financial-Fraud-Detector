@@ -97,6 +97,7 @@ Desktop.ini
 /docs/*
 !/docs/README.md
 !/docs/teammate-setup.md
+!/docs/EVALUATOR_PRESENTATION_GUIDE.md
 /docs/planning/
 /docs/task-*-change-report.*
 

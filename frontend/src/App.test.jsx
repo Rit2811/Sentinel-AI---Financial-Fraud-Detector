@@ -54,7 +54,7 @@ beforeEach(() => {
 })
 
 test('renders real operational values returned by the dashboard API', async () => {
-  render(<App />)
+  render(<App defaultTab="dashboard" />)
 
   expect(screen.getByText('Loading operational data')).toBeInTheDocument()
   expect(await screen.findByText('Live backend')).toBeInTheDocument()
@@ -73,7 +73,7 @@ test('renders real operational values returned by the dashboard API', async () =
 })
 
 test('requests a fresh backend snapshot when the activity range changes', async () => {
-  render(<App />)
+  render(<App defaultTab="dashboard" />)
   await screen.findByText('Live backend')
 
   fireEvent.click(screen.getByRole('button', { name: '7D' }))
@@ -91,7 +91,7 @@ test('requests a fresh backend snapshot when the activity range changes', async 
 })
 
 test('supports keyboard inspection across chart buckets', async () => {
-  render(<App />)
+  render(<App defaultTab="dashboard" />)
   const chart = await screen.findByRole('group', {
     name: /Use left and right arrow keys/,
   })
@@ -105,10 +105,23 @@ test('supports keyboard inspection across chart buckets', async () => {
 
 test('shows a retryable state when the dashboard API is unavailable', async () => {
   globalThis.fetch = vi.fn(async () => response({}, { ok: false, status: 503 }))
-  render(<App />)
+  render(<App defaultTab="dashboard" />)
 
   expect(await screen.findByRole('alert', { name: '' })).toHaveTextContent(
     'Dashboard data is unavailable',
   )
   expect(screen.getByRole('button', { name: 'Try again' })).toBeInTheDocument()
+})
+
+test('renders credit card simulator tab and switches tabs cleanly', async () => {
+  render(<App defaultTab="simulator" />)
+
+  expect(
+    screen.getByText(/Credit Card Payment Simulator & Fraud Detection/),
+  ).toBeInTheDocument()
+  expect(screen.getByRole('button', { name: /Authorize Payment/i })).toBeInTheDocument()
+
+  // Switch to dashboard
+  fireEvent.click(screen.getByRole('tab', { name: /Ingestion & Stream Dashboard/i }))
+  expect(await screen.findByText('Total Events')).toBeInTheDocument()
 })
